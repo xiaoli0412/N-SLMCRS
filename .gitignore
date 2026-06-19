@@ -31,3 +31,12 @@ build/
 .vscode/
 .DS_Store
 Thumbs.db
+nul
+
+# 部署辅助（含密码 / 绑定具体服务器，切勿提交）
+scripts/askpass.sh
+scripts/rssh.sh
+scripts/rscp.sh
+
+# 本地发布产物
+/dist/
