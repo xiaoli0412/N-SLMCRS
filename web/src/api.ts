@@ -40,6 +40,13 @@ export interface UpstreamKey {
   consecutive_fail: number
 }
 
+// 批量导入单条结果
+export interface BulkImportItem {
+  key_mask?: string
+  status: 'added' | 'duplicate' | 'invalid' | string
+  reason?: string
+}
+
 export interface Credential {
   id: number
   credential_mask: string
@@ -119,6 +126,11 @@ export const api = {
   listKeys: () => request<{ data: UpstreamKey[] }>('/api/admin/keys'),
   addKey: (data: { key_value: string; label?: string; email?: string; rpm_override?: number }) =>
     request<{ id: number }>('/api/admin/keys', { method: 'POST', body: JSON.stringify(data) }),
+  bulkAddKeys: (data: { keys?: string[]; raw?: string; label?: string; email?: string; rpm_override?: number }) =>
+    request<{ total: number; added: number; skipped: number; items: BulkImportItem[] }>(
+      '/api/admin/keys/bulk',
+      { method: 'POST', body: JSON.stringify(data) },
+    ),
   deleteKey: (id: number) => request(`/api/admin/keys/${id}`, { method: 'DELETE' }),
   toggleKey: (id: number, enabled: boolean) =>
     request(`/api/admin/keys/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),

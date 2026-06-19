@@ -81,10 +81,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, adminToken string) {
 	g := r.Group("/api/admin")
 	g.Use(AuthMiddleware(adminToken))
 	{
-		g.GET("/keys", h.listKeys)
-		g.POST("/keys", h.addKey)
-		g.DELETE("/keys/:id", h.deleteKey)
-		g.PATCH("/keys/:id", h.updateKey)
+	g.GET("/keys", h.listKeys)
+	g.POST("/keys", h.addKey)
+	g.POST("/keys/bulk", h.bulkAddKeys)
+	g.DELETE("/keys/:id", h.deleteKey)
+	g.PATCH("/keys/:id", h.updateKey)
 
 		g.GET("/credentials", h.listCredentials)
 		g.POST("/credentials", h.addCredential)
@@ -159,6 +160,72 @@ func (h *Handler) addKey(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"id": k.ID, "key_mask": k.KeyMask})
+}
+
+// bulkAddKeysReq 批量导入请求体。
+// 既支持预拆分数组，也支持单个多行/逗号分隔字符串（便于粘贴）。
+type bulkAddKeysReq struct {
+	Keys        []string `json:"keys"`         // 精确数组
+	Raw         string   `json:"raw"`          // 多行 / 逗号分隔粘贴文本（与 keys 合并）
+	Label       string   `json:"label"`        // 批量统一标签
+	Email       string   `json:"email"`
+	RPMOverride int      `json:"rpm_override"`
+}
+
+// bulkAddKeys 批量导入上游密钥。
+//
+// 解析顺序：合并 keys 数组与 raw 文本 → 按换行/逗号/空白拆分 → 去空格。
+// 导入在单事务内完成，逐条返回 added/duplicate/invalid 结果。
+func (h *Handler) bulkAddKeys(c *gin.Context) {
+	var req bulkAddKeysReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 合并数组与原始文本
+	raws := append([]string{}, req.Keys...)
+	if req.Raw != "" {
+		raws = append(raws, splitKeys(req.Raw)...)
+	}
+	if len(raws) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "未提供任何密钥"})
+		return
+	}
+
+	res, err := h.store.BulkAddUpstreamKeys(c.Request.Context(), raws, req.Label, req.Email, req.RPMOverride)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"total":   res.Total,
+		"added":   res.Added,
+		"skipped": res.Skipped,
+		"items":   res.Items,
+	})
+}
+
+// splitKeys 将粘贴文本拆成独立密钥串（兼容换行、逗号、空白、分号）。
+func splitKeys(s string) []string {
+	out := []string{}
+	cur := make([]rune, 0, len(s))
+	flush := func() {
+		if len(cur) > 0 {
+			out = append(out, string(cur))
+			cur = cur[:0]
+		}
+	}
+	for _, r := range s {
+		switch r {
+		case '\n', '\r', ',', ';', ' ', '\t':
+			flush()
+		default:
+			cur = append(cur, r)
+		}
+	}
+	flush()
+	return out
 }
 
 func (h *Handler) deleteKey(c *gin.Context) {

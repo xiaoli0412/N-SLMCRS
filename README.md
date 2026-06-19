@@ -6,7 +6,7 @@
   <img alt="Go" src="https://img.shields.io/badge/Go-1.24-76b900?logo=go&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-pure--Go-003b57?logo=sqlite&logoColor=white">
-  <img alt="License" src="https://img.shields.io/badge/status-WIP%20v0.1-orange">
+  <img alt="License" src="https://img.shields.io/badge/status-v0.2-green">
 </p>
 
 ---
@@ -134,6 +134,7 @@ curl http://localhost:8787/v1/chat/completions \
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET/POST` | `/api/admin/keys` | 上游密钥 列表 / 新增 |
+| `POST` | `/api/admin/keys/bulk` | **批量导入**上游密钥（粘贴多行/逗号分隔，自动去重 + 幂等） |
 | `DELETE/PATCH` | `/api/admin/keys/:id` | 删除 / 启停 |
 | `GET/POST` | `/api/admin/credentials` | 下游凭证 列表 / 签发 |
 | `DELETE` | `/api/admin/credentials/:id` | 删除凭证 |
@@ -174,6 +175,13 @@ curl http://localhost:8787/v1/chat/completions \
 curl -X POST http://localhost:8787/api/admin/keys \
   -H "X-Admin-Token: $ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d '{"key_value":"nvapi-xxx","label":"主账号"}'
+
+# 1b. 批量导入上游密钥（粘贴多行 / 逗号 / 分号分隔，自动去重 + 幂等）
+curl -X POST http://localhost:8787/api/admin/keys/bulk \
+  -H "X-Admin-Token: $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"raw":"nvapi-aaa...\nnvapi-bbb...\nnvapi-ccc...","label":"2026-06 批量"}'
+# 响应：{ "total":3, "added":3, "skipped":0, "items":[{...}] }
+# 重复导入同一批不会报错 —— 已存在的密钥标记为 duplicate 跳过
 
 # 2. 同步模型目录
 curl -X POST http://localhost:8787/api/admin/models/sync -H "X-Admin-Token: $ADMIN_TOKEN"
@@ -221,12 +229,19 @@ python scripts/load-test.py --url http://localhost:8787 \
 
 ## 🗺 路线图
 
-**Phase 1（当前）** — 核心骨架 ✅
+**Phase 1** — 核心骨架 ✅
 - 多密钥聚合 + N 路并发先到先得
 - OpenAI 协议（chat/completions/models）
 - 模型目录 24h 同步 + 失效推荐
 - 运维监控面板（8 模块）
 - Docker + systemd 部署
+
+**v0.2** — 密钥管理增强 ✅
+- 🔑 **批量导入上游密钥**：粘贴多行 / 逗号 / 分号分隔，自动批内去重 + 数据库幂等（重复导入不报错）
+- 📊 导入结果逐条明细（added / duplicate / invalid）+ 实时解析预览
+- 🎨 密钥页 UI 优化：Toast 反馈、连续失败列、活跃密钥计数徽标
+- 🐛 修复 `.gitignore` 误伤 `internal/data` 源码包导致仓库无法克隆构建的严重问题
+- ✅ 新增 `BulkAddUpstreamKeys` 单元测试覆盖去重 / 幂等 / 非法格式
 
 **Phase 2** — 协议与调度扩展
 - Claude（`/v1/messages`）+ Gemini（`/v1beta/...:generateContent`）协议
@@ -252,4 +267,4 @@ python scripts/load-test.py --url http://localhost:8787 \
 
 ## 📄 许可
 
-私有项目 · N-SLMCRS · v0.1（Work In Progress）
+私有项目 · N-SLMCRS · v0.2

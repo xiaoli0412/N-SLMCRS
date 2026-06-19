@@ -23,7 +23,8 @@ build/
 .env
 .env.*
 !.env.example
-data/
+# 运行时数据目录（仅仓库根目录的 data/，不影响 internal/data 源码包）
+/data/
 
 # Editor / OS
 .idea/

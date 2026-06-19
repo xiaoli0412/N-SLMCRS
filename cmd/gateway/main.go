@@ -31,6 +31,9 @@ import (
 	"github.com/nslmcrs/gateway/internal/upstream"
 )
 
+// version 通过 -ldflags "-X main.version=..." 注入；默认 v0.2.0。
+var version = "v0.2.0"
+
 func main() {
 	// 1. 配置
 	cfg, err := config.Load()
@@ -94,7 +97,7 @@ func main() {
 
 	// 健康检查
 	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "n-slmcrs", "version": "0.1.0"})
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "n-slmcrs", "version": version})
 	})
 
 	// 转发 API（下游凭证鉴权）

@@ -46,7 +46,7 @@ export default function Layout() {
         <div className="px-3.5 py-3 flex items-center gap-2 font-extrabold text-[15px]">
           <span className="w-[22px] h-[22px] flex items-center justify-center bg-gradient-to-br from-nv-green to-nv-green-dim rounded-md text-black shadow-nv-glow">⬢</span>
           <span className="text-white">N-SLMCRS</span>
-          <span className="text-gray-600 text-[11px] font-normal px-1.5 py-0.5 rounded bg-white/[0.04] border border-white/[0.06]">v0.1</span>
+          <span className="text-gray-600 text-[11px] font-normal px-1.5 py-0.5 rounded bg-white/[0.04] border border-white/[0.06]">v0.2</span>
         </div>
         <nav className="mt-1">
           {NAV.map((sec) => (
