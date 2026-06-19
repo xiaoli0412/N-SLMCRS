@@ -1,0 +1,38 @@
+# Docker 构建上下文排除清单
+
+# 已编译产物（容器内重新编译）
+bin/
+*.exe
+
+# 本地数据库
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# 环境与密钥（绝不进镜像）
+.env
+.env.local
+.env.*.local
+
+# Git / IDE
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+*.swp
+
+# 文档与脚本（非构建依赖）
+docs/
+deploy/
+*.md
+
+# 前端依赖与缓存
+web/node_modules/
+web/.vite/
+
+# 测试与临时
+**/*_test.go
+**/testdata/
+tmp/

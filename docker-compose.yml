@@ -1,0 +1,40 @@
+# N-SLMCRS 网关 docker-compose 编排。
+#
+# 启动：
+#   docker compose up -d
+#
+# 首次启动前：复制 .env.example 为 .env 并填入 ADMIN_TOKEN 等。
+
+services:
+  gateway:
+    build: .
+    image: nslmcrs/gateway:latest
+    container_name: nslmcrs-gateway
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8787}:8787"
+    env_file:
+      - .env
+    environment:
+      # 容器内固定路径（覆盖默认值）
+      SQLITE_PATH: /data/nslmcrs.db
+      GIN_MODE: release
+    volumes:
+      # SQLite 数据持久化（命名卷）
+      - nslmcrs-data:/data
+    healthcheck:
+      test: ["CMD", "/gateway", "-version"]
+      # distroless 无 wget/curl，简化为进程存活检测；生产可加 sidecar
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  nslmcrs-data:
+    driver: local

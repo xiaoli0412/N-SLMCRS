@@ -1,0 +1,32 @@
+# Brainstorming / design mockups (local only)
+.superpowers/
+
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build / runtime
+dist/
+build/
+/bin/
+*.exe
+*.exe~
+*.tsbuildinfo
+*.log
+/gateway
+/gateway.exe
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+data/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

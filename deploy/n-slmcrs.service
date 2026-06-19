@@ -1,0 +1,66 @@
+# N-SLMCRS 网关 systemd 服务单元。
+#
+# 安装方式（见同目录 install.sh）：
+#   sudo cp n-slmcrs.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now n-slmcrs
+#
+# 日志：journalctl -u n-slmcrs -f
+
+[Unit]
+Description=N-SLMCRS Gateway (NVIDIA Studio LLM Concurrent Dispatch)
+Documentation=https://github.com/nslmcrs/gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# 运行用户（无登录 shell，提高隔离性）
+User=nslmcrs
+Group=nslmcrs
+
+# 工作目录与二进制路径（按实际安装位置调整）
+WorkingDirectory=/opt/n-slmcrs
+ExecStart=/opt/n-slmcrs/gateway
+
+# 通过环境文件注入配置（ADMIN_TOKEN、NVIDIA_* 等）
+EnvironmentFile=-/opt/n-slmcrs/.env
+
+# 始终读取环境变量
+Environment=GIN_MODE=release
+
+# 资源限制
+LimitNOFILE=65535
+LimitNPROC=65535
+
+# 自动重启策略
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/n-slmcrs/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# 标准输出 / 错误都进 journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=n-slmcrs
+
+[Install]
+WantedBy=multi-user.target

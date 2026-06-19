@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-nv-dark text-gray-200 antialiased;
+    font-family: theme('fontFamily.sans');
+  }
+  /* 滚动条 */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-nv-dark-100;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-nv-dark-400 rounded;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-nv-dark-300;
+  }
+}
+
+@layer components {
+  /* 玻璃拟态卡片 */
+  .glass-card {
+    @apply bg-gradient-to-br from-white/[0.04] to-white/[0.01] border border-white/[0.06] rounded-xl;
+    backdrop-filter: blur(10px);
+  }
+  /* KPI 卡片 */
+  .kpi-card {
+    @apply glass-card p-4 relative overflow-hidden transition-all duration-200 hover:border-nv-green/30 hover:-translate-y-0.5;
+  }
+  .kpi-card::after {
+    content: '';
+    @apply absolute -top-12 -right-8 w-28 h-28 rounded-full pointer-events-none;
+    background: radial-gradient(circle, rgba(118, 185, 0, 0.06), transparent 70%);
+  }
+  /* 主按钮 */
+  .btn-primary {
+    @apply px-4 py-2 rounded-lg bg-nv-green text-black font-semibold text-sm hover:bg-nv-green-bright transition-colors;
+  }
+  .btn-ghost {
+    @apply px-3 py-1.5 rounded-lg text-gray-300 hover:bg-white/[0.05] transition-colors text-sm;
+  }
+  /* 导航项 */
+  .nav-item {
+    @apply px-3.5 py-2 rounded-lg text-gray-400 hover:bg-white/[0.03] hover:text-gray-200 transition-all duration-150 cursor-pointer relative flex items-center gap-2.5 text-sm;
+  }
+  .nav-item.active {
+    @apply text-white;
+    background: linear-gradient(90deg, rgba(118, 185, 0, 0.12), rgba(118, 185, 0, 0.02));
+  }
+  .nav-item.active::before {
+    content: '';
+    @apply absolute left-0 top-2 bottom-2 w-[3px] bg-nv-green rounded shadow-nv-glow;
+  }
+  /* 输入框 */
+  .input {
+    @apply w-full px-3 py-2 bg-nv-dark-300 border border-nv-dark-400 rounded-lg text-gray-100 placeholder-gray-600 focus:outline-none focus:border-nv-green/50 transition-colors text-sm;
+  }
+  /* 状态点 */
+  .status-dot {
+    @apply w-1.5 h-1.5 rounded-full inline-block;
+  }
+  .status-dot.ok {
+    @apply bg-nv-green;
+    box-shadow: 0 0 6px theme('colors.nv.green');
+  }
+  .status-dot.warn {
+    @apply bg-amber-400;
+    box-shadow: 0 0 6px theme('colors.amber.400');
+  }
+  .status-dot.err {
+    @apply bg-red-500;
+    box-shadow: 0 0 6px theme('colors.red.500');
+  }
+}
