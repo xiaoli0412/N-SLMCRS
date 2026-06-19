@@ -21,12 +21,13 @@ COPY web/ ./
 RUN npm run build
 
 # ───────────────── 阶段二：Go 构建 ─────────────────
-FROM golang:1.24-alpine AS go-builder
+# go.mod 要求 go >= 1.25.0（GOTOOLCHAIN=local 避免 BuildKit 拉取意外工具链）
+FROM golang:1.25-alpine AS go-builder
 WORKDIR /src
 
 # 依赖缓存
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOTOOLCHAIN=local go mod download
 
 # 源码
 COPY . .
