@@ -88,7 +88,8 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
 			Port:       envInt("PORT", 8787),
-			AdminToken: envStr("ADMIN_TOKEN", ""),
+			// 默认初始令牌 "admin"：首次登录后强制修改并写入 bcrypt 哈希。
+			AdminToken: envStr("ADMIN_TOKEN", "admin"),
 		},
 		Upstream: UpstreamConfig{
 			ChatBaseURL:        envStr("NVIDIA_CHAT_BASE_URL", "https://integrate.api.nvidia.com/v1"),

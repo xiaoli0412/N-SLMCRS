@@ -1,7 +1,11 @@
 // Package admin 提供管理 API：上游密钥、下游凭证、指标查询。
 //
-// 所有管理端点在 /api/admin 下，需 ADMIN_TOKEN 鉴权。
-// Phase 1 端点：
+// 鉴权：默认初始令牌 admin，首次登录后强制改密并写入 bcrypt 哈希（admin:token_hash）。
+// 鉴权端点（无需常规中间件）：
+//   POST /api/admin/login             校验令牌，返回 must_change_password
+//   POST /api/admin/change-password   修改令牌（写入 bcrypt 哈希，旧默认令牌失效）
+//   GET  /api/admin/auth/status       探测是否需强制改密
+// Phase 1 端点（受 AuthMiddleware 保护）：
 //   GET    /api/admin/keys              列出上游密钥
 //   POST   /api/admin/keys              新增上游密钥
 //   DELETE /api/admin/keys/:id          删除上游密钥
@@ -26,10 +30,13 @@
 package admin
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -37,14 +44,19 @@ import (
 	"github.com/nslmcrs/gateway/internal/config"
 	"github.com/nslmcrs/gateway/internal/data"
 	"github.com/nslmcrs/gateway/internal/modelmeta"
+	"golang.org/x/crypto/bcrypt"
 )
+
+// settingKeyTokenHash 存储管理令牌的 bcrypt 哈希。
+// 不存在时表示仍处于初始默认令牌状态（首次登录后强制改密）。
+const settingKeyTokenHash = "admin:token_hash"
 
 // Handler 管理 API 处理器。
 type Handler struct {
-	store   *data.Store
-	syncer  *modelmeta.Syncer
-	cfg     *config.Config
-	ap      *autopilot.Controller // Auto-Pilot 总控（可选；main.go 装配后注入）
+	store  *data.Store
+	syncer *modelmeta.Syncer
+	cfg    *config.Config
+	ap     *autopilot.Controller // Auto-Pilot 总控（可选；main.go 装配后注入）
 }
 
 // New 创建管理 API 处理器。
@@ -52,40 +64,91 @@ func New(store *data.Store, syncer *modelmeta.Syncer, cfg *config.Config) *Handl
 	return &Handler{store: store, syncer: syncer, cfg: cfg}
 }
 
-// AuthMiddleware 管理 API 鉴权（ADMIN_TOKEN）。
-func AuthMiddleware(adminToken string) gin.HandlerFunc {
+// tokenFromRequest 从请求中提取管理令牌（X-Admin-Token 或 Bearer）。
+func tokenFromRequest(c *gin.Context) string {
+	token := c.GetHeader("X-Admin-Token")
+	if token == "" {
+		auth := c.GetHeader("Authorization")
+		if len(auth) > 7 && auth[:7] == "Bearer " {
+			token = auth[7:]
+		}
+	}
+	return token
+}
+
+// verifyToken 校验令牌是否有效。
+//
+// 策略：若已设置哈希（admin:token_hash 存在）则用 bcrypt 比对；
+// 否则（初始状态）与配置默认令牌做常量时间明文比对。
+// 返回 (ok, isDefault)。isDefault=true 表示仍用默认初始令牌、应强制改密。
+func (h *Handler) verifyToken(ctx context.Context, token string) (ok bool, isDefault bool, err error) {
+	hash, _ := h.store.GetSetting(ctx, settingKeyTokenHash)
+	if hash != "" {
+		if bcryptErr := bcrypt.CompareHashAndPassword([]byte(hash), []byte(token)); bcryptErr != nil {
+			return false, false, nil
+		}
+		return true, false, nil
+	}
+	// 初始状态：比对默认令牌（常量时间防时序）
+	def := h.cfg.Server.AdminToken
+	if def == "" {
+		// 未配置且无哈希 → 无鉴权（仅开发模式）；视为非默认（不强制改密）
+		return true, false, nil
+	}
+	if subtle.ConstantTimeCompare([]byte(token), []byte(def)) == 1 {
+		return true, true, nil
+	}
+	return false, false, nil
+}
+
+// mustChangePassword 是否处于「首次登录需强制改密」状态。
+func (h *Handler) mustChangePassword(ctx context.Context) bool {
+	hash, _ := h.store.GetSetting(ctx, settingKeyTokenHash)
+	return hash == "" && h.cfg.Server.AdminToken != ""
+}
+
+// AuthMiddleware 管理 API 鉴权（ADMIN_TOKEN 或 bcrypt 哈希）。
+// 初始默认令牌状态下，所有受保护请求仍放行，但通过响应头
+// X-Admin-Must-Change: 1 提示前端弹出强制改密框。
+func (h *Handler) AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 无配置 token 时跳过（开发模式，生产强烈建议配置）
-		if adminToken == "" {
-			c.Next()
+		token := tokenFromRequest(c)
+		ok, isDefault, err := h.verifyToken(c.Request.Context(), token)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.Abort()
 			return
 		}
-		token := c.GetHeader("X-Admin-Token")
-		if token == "" {
-			auth := c.GetHeader("Authorization")
-			if len(auth) > 7 && auth[:7] == "Bearer " {
-				token = auth[7:]
-			}
-		}
-		if token != adminToken {
+		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "无效的管理令牌"})
 			c.Abort()
 			return
+		}
+		if isDefault {
+			c.Header("X-Admin-Must-Change", "1")
 		}
 		c.Next()
 	}
 }
 
 // RegisterRoutes 注册管理路由。
-func (h *Handler) RegisterRoutes(r *gin.Engine, adminToken string) {
+//
+// 受保护端点在 /api/admin 下走 AuthMiddleware；鉴权相关的 login /
+// change-password / auth-status 注册在组外，便于首登与改密场景访问。
+func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	// 鉴权相关（无需常规中间件，内部自带校验）
+	r.POST("/api/admin/login", h.login)
+	r.POST("/api/admin/change-password", h.changePassword)
+	r.GET("/api/admin/auth/status", h.authStatus)
+
 	g := r.Group("/api/admin")
-	g.Use(AuthMiddleware(adminToken))
+	g.Use(h.AuthMiddleware())
 	{
-	g.GET("/keys", h.listKeys)
-	g.POST("/keys", h.addKey)
-	g.POST("/keys/bulk", h.bulkAddKeys)
-	g.DELETE("/keys/:id", h.deleteKey)
-	g.PATCH("/keys/:id", h.updateKey)
+		g.GET("/keys", h.listKeys)
+		g.POST("/keys", h.addKey)
+		g.POST("/keys/bulk", h.bulkAddKeys)
+		g.DELETE("/keys/:id", h.deleteKey)
+		g.PATCH("/keys/:id", h.updateKey)
 
 		g.GET("/credentials", h.listCredentials)
 		g.POST("/credentials", h.addCredential)
@@ -109,6 +172,93 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, adminToken string) {
 		g.POST("/autopilot/pending/:key/approve", h.apApprovePending)
 		g.POST("/autopilot/pending/:key/reject", h.apRejectPending)
 	}
+}
+
+// --- 鉴权 / 改密 ---
+
+type loginReq struct {
+	Token string `json:"token"`
+}
+
+// login 校验令牌并返回是否需要强制改密。
+// 成功响应：{ ok:true, must_change_password, is_default }
+func (h *Handler) login(c *gin.Context) {
+	var req loginReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ok, isDefault, err := h.verifyToken(c.Request.Context(), strings.TrimSpace(req.Token))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"ok": false, "error": "无效的管理令牌"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "must_change_password": isDefault, "is_default": isDefault})
+}
+
+type changePasswordReq struct {
+	Current string `json:"current"`
+	Next    string `json:"next"`
+}
+
+// changePassword 修改管理令牌。
+// 要求 current 有效、next 长度 ≥ 6 且不能等于默认值 admin。
+// 成功后写入 bcrypt 哈希，旧默认令牌即失效。
+func (h *Handler) changePassword(c *gin.Context) {
+	var req changePasswordReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	current := strings.TrimSpace(req.Current)
+	next := strings.TrimSpace(req.Next)
+
+	// 校验当前令牌
+	ok, _, err := h.verifyToken(c.Request.Context(), current)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "当前令牌无效"})
+		return
+	}
+	// 校验新令牌强度
+	if len(next) < 6 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "新令牌至少 6 个字符"})
+		return
+	}
+	if next == "admin" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "新令牌不能使用默认值 admin"})
+		return
+	}
+	if next == current {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "新令牌不能与当前令牌相同"})
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(next), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.store.SetSetting(c.Request.Context(), settingKeyTokenHash, string(hash)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// authStatus 返回鉴权状态（无需 token，供前端探测是否需强制改密）。
+func (h *Handler) authStatus(c *gin.Context) {
+	initialized := !h.mustChangePassword(c.Request.Context())
+	c.JSON(http.StatusOK, gin.H{
+		"initialized":         initialized,
+		"must_change_password": !initialized,
+	})
 }
 
 // --- 上游密钥 ---

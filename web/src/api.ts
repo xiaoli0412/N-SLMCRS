@@ -122,6 +122,18 @@ export interface PendingEntry {
 }
 
 export const api = {
+  // 鉴权 / 改密（无需常规中间件）
+  authStatus: () => request<{ initialized: boolean; must_change_password: boolean }>('/api/admin/auth/status'),
+  login: (token: string) =>
+    request<{ ok: boolean; must_change_password: boolean; is_default: boolean }>('/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
+  changePassword: (current: string, next: string) =>
+    request<{ ok: boolean }>('/api/admin/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ current, next }),
+    }),
   // 上游密钥
   listKeys: () => request<{ data: UpstreamKey[] }>('/api/admin/keys'),
   addKey: (data: { key_value: string; label?: string; email?: string; rpm_override?: number }) =>

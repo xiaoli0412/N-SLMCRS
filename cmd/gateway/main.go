@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -31,10 +32,18 @@ import (
 	"github.com/nslmcrs/gateway/internal/upstream"
 )
 
-// version 通过 -ldflags "-X main.version=..." 注入；默认 v0.2.0。
-var version = "v0.2.0"
+// version 通过 -ldflags "-X main.version=..." 注入；默认 v0.3.0。
+var version = "v0.3.0"
 
 func main() {
+	// -version：打印版本后退出（供 Docker healthcheck 与运维探活使用）
+	showVersion := flag.Bool("version", false, "打印版本号并退出")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println("n-slmcrs gateway", version)
+		os.Exit(0)
+	}
+
 	// 1. 配置
 	cfg, err := config.Load()
 	if err != nil {
@@ -42,6 +51,9 @@ func main() {
 	}
 	if cfg.Server.AdminToken == "" {
 		log.Println("[WARN] 未配置 ADMIN_TOKEN，管理 API 处于无鉴权模式（仅供开发）")
+	} else {
+		// 提示初始默认令牌：首次登录后强制修改并写入 bcrypt 哈希。
+		log.Printf("[INFO] 管理面板初始令牌=%q（未修改前为默认值，首次登录后将强制改密）", cfg.Server.AdminToken)
 	}
 
 	// 2. 数据库
@@ -105,10 +117,10 @@ func main() {
 	// /v1/models 允许匿名；其余需凭证
 	entryHandler.RegisterRoutesWithAuth(r, entry.AuthMiddleware(store, []string{"/v1/models"}))
 
-	// 管理 API
+	// 管理 API（鉴权由 Handler 持有，token 默认 admin + 首次强制改密）
 	adminHandler := admin.New(store, syncer, cfg)
 	adminHandler.SetAutopilot(apCtrl)
-	adminHandler.RegisterRoutes(r, cfg.Server.AdminToken)
+	adminHandler.RegisterRoutes(r)
 
 	// 前端静态资源 + SPA 兜底（最后注册）
 	entry.ServeFrontend(r)
