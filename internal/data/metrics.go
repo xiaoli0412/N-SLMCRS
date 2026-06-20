@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"database/sql"
 	"time"
 )
 
@@ -129,23 +130,35 @@ func (s *Store) GetTimeSeries(ctx context.Context, window time.Duration, bucketS
 }
 
 // KeyHealthEntry 单个 Key 的健康摘要（面板列表用）。
+//
+// 字段命名使用 snake_case（json tag），与前端约定一致。
 type KeyHealthEntry struct {
-	KeyMask     string
-	Status      string
-	SuccessRate float64
-	AvgLatency  float64
-	Requests    int64
+	KeyMask         string  `json:"key_mask"`
+	Status          string  `json:"status"`
+	SuccessRate     float64 `json:"success_rate"`
+	AvgLatency      float64 `json:"avg_latency_ms"`
+	Requests        int64   `json:"total_requests"`
+	ConsecutiveFail int     `json:"consecutive_fail"`
+	EwmaRate        float64 `json:"ewma_rate"`
+	LastSuccessAt   int64   `json:"last_success_at"`
+	LastErrorAt     int64   `json:"last_error_at"`
 }
 
 // GetKeyHealth 近 window 内每个 Key 的健康指标。
+//
+// 关联 upstream_keys（连续失败 / 状态）和 key_health（最后成功/失败时间戳）。
+// ewma_rate 当前退化为窗口成功率（与 success_rate 同值）；
+// TODO: 由 admin handler 注入 ratelimit.HealthTracker 并使用其真实 EWMA。
 func (s *Store) GetKeyHealth(ctx context.Context, window time.Duration) ([]KeyHealthEntry, error) {
 	since := time.Now().Add(-window).Unix()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT k.key_mask, k.status,
+		SELECT k.key_mask, k.status, k.consecutive_fail,
+		       kh.last_success_ts, kh.last_error_ts,
 		       COUNT(r.id),
 		       COALESCE(SUM(CASE WHEN r.status='success' THEN 1 ELSE 0 END),0),
 		       COALESCE(AVG(r.latency_ms),0)
 		FROM upstream_keys k
+		LEFT JOIN key_health kh ON kh.key_id = k.id
 		LEFT JOIN request_logs r ON r.upstream_key = k.key_mask AND r.ts > ?
 		GROUP BY k.id
 		ORDER BY k.id`, since)
@@ -156,14 +169,24 @@ func (s *Store) GetKeyHealth(ctx context.Context, window time.Duration) ([]KeyHe
 	var out []KeyHealthEntry
 	for rows.Next() {
 		var e KeyHealthEntry
+		var lastSuccess, lastError sql.NullInt64
 		var total int64
 		var success int64
-		if err := rows.Scan(&e.KeyMask, &e.Status, &total, &success, &e.AvgLatency); err != nil {
+		if err := rows.Scan(&e.KeyMask, &e.Status, &e.ConsecutiveFail,
+			&lastSuccess, &lastError,
+			&total, &success, &e.AvgLatency); err != nil {
 			return nil, err
 		}
 		e.Requests = total
 		if total > 0 {
 			e.SuccessRate = 100.0 * float64(success) / float64(total)
+			e.EwmaRate = e.SuccessRate // 默认退化为窗口成功率；调用方可用 HealthTracker 覆盖
+		}
+		if lastSuccess.Valid {
+			e.LastSuccessAt = lastSuccess.Int64
+		}
+		if lastError.Valid {
+			e.LastErrorAt = lastError.Int64
 		}
 		out = append(out, e)
 	}

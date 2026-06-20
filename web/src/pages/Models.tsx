@@ -1,19 +1,24 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { api } from '../api'
-import { PageHeader, Spinner, EmptyState, Card } from '../components/ui'
+import { api, Model, ModelStats } from '../api'
+import { PageHeader, Spinner, EmptyState } from '../components/ui'
 
 export default function Models() {
   const { t } = useTranslation()
-  const [models, setModels] = useState<any[]>([])
+  const [models, setModels] = useState<Model[]>([])
+  const [stats, setStats] = useState<ModelStats[]>([])
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [q, setQ] = useState('')
 
   const load = async () => {
     try {
-      const r = await api.listModels()
-      setModels(r.data || [])
+      const [mr, sr] = await Promise.all([
+        api.listModels(),
+        api.getModelStats('1h').catch(() => ({ data: [] as ModelStats[] })),
+      ])
+      setModels(mr.data || [])
+      setStats(sr.data || [])
     } catch { /* */ }
     setLoading(false)
   }
@@ -26,10 +31,19 @@ export default function Models() {
     setSyncing(false)
   }
 
-  const filtered = models.filter((m) =>
-    !q || (m.model_id || '').toLowerCase().includes(q.toLowerCase()))
+  // 按 model_id 索引 stats
+  const statsById = new Map(stats.map((s) => [s.model_id, s]))
 
-  const lastSync = models.length > 0 ? models[0].last_checked : null
+  const filtered = models.filter((m) =>
+    !q || m.id.toLowerCase().includes(q.toLowerCase()) ||
+    m.capability.toLowerCase().includes(q.toLowerCase()) ||
+    m.owned_by.toLowerCase().includes(q.toLowerCase()))
+
+  // 最近一次同步时间（最大 synced_at）
+  const lastSync = models.reduce<number | null>((acc, m) => {
+    if (m.synced_at > (acc ?? 0)) return m.synced_at
+    return acc
+  }, null)
 
   return (
     <>
@@ -47,7 +61,7 @@ export default function Models() {
         <div className="flex items-center gap-3">
           {lastSync && (
             <span className="text-[11px] text-gray-600">
-              上次同步: {new Date(lastSync).toLocaleString('zh-CN', { hour12: false })}
+              上次同步: {new Date(lastSync * 1000).toLocaleString('zh-CN', { hour12: false })}
             </span>
           )}
           <button onClick={sync} disabled={syncing} className="btn-primary">
@@ -60,19 +74,22 @@ export default function Models() {
         <EmptyState text={models.length === 0 ? "尚未同步模型，点击右上角立即同步" : "未匹配到模型"} />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {filtered.map((m, i) => {
-            const stale = m.status === 'inactive' || m.status === 'stale'
-            const type = inferType(m.model_id)
+          {filtered.map((m) => {
+            const stale = !m.is_active
+            const type = inferType(m.id)
+            const ms = statsById.get(m.id)
+            const total = ms?.total_requests ?? 0
+            const rate = ms?.success_rate ?? 0
             return (
-              <div key={i} className={`glass-card p-4 hover:border-nv-green/30 transition-colors ${stale ? 'opacity-50' : ''}`}>
+              <div key={m.id} className={`glass-card p-4 hover:border-nv-green/30 transition-colors ${stale ? 'opacity-50' : ''}`}>
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <span className={`w-7 h-7 rounded-md flex items-center justify-center text-[12px] ${type.bg}`}>
                       {type.icon}
                     </span>
                     <div>
-                      <div className="text-[12.5px] font-semibold text-gray-200 font-mono leading-tight">{m.model_id}</div>
-                      <div className="text-[10px] text-gray-600">{type.label}</div>
+                      <div className="text-[12.5px] font-semibold text-gray-200 font-mono leading-tight">{m.id}</div>
+                      <div className="text-[10px] text-gray-600">{type.label}{m.owned_by ? ` · ${m.owned_by}` : ''}</div>
                     </div>
                   </div>
                   {stale ? (
@@ -81,20 +98,15 @@ export default function Models() {
                     <span className="text-[10px] px-1.5 py-0.5 rounded border border-nv-green/20 bg-nv-green/10 text-nv-green">可用</span>
                   )}
                 </div>
-                {stale && m.alternative && (
-                  <div className="mt-2 pt-2 border-t border-white/[0.04] text-[10.5px] text-amber-400">
-                    ⚠ 建议替代：<span className="font-mono text-amber-300">{m.alternative}</span>
-                  </div>
-                )}
                 <div className="mt-3 grid grid-cols-2 gap-2 text-[10.5px]">
                   <div>
                     <div className="text-gray-600">请求量</div>
-                    <div className="text-gray-300 font-semibold">{m.request_count || 0}</div>
+                    <div className="text-gray-300 font-semibold">{total}</div>
                   </div>
                   <div>
                     <div className="text-gray-600">成功率</div>
-                    <div className={`font-semibold ${(m.success_rate || 0) >= 95 ? 'text-nv-green' : (m.success_rate || 0) >= 80 ? 'text-amber-400' : 'text-gray-400'}`}>
-                      {(m.success_rate || 0).toFixed(1)}%
+                    <div className={`font-semibold ${rate >= 95 ? 'text-nv-green' : rate >= 80 ? 'text-amber-400' : total === 0 ? 'text-gray-400' : 'text-red-400'}`}>
+                      {total === 0 ? '—' : `${rate.toFixed(1)}%`}
                     </div>
                   </div>
                 </div>
