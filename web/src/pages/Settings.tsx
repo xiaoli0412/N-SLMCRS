@@ -1,117 +1,145 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { api, SchedulerSettings } from '../api'
 import { PageHeader, Card } from '../components/ui'
 
-// 配置项分类
+// 配置字段定义：驱动渲染与提交。时长字段以「秒」与后端契约对齐。
 interface SettingField {
-  key: string
+  key: keyof SchedulerSettings
   label: string
   desc: string
-  type: 'text' | 'number' | 'switch'
-  default: string | number | boolean
   group: string
 }
 
 const FIELDS: SettingField[] = [
-  // 服务
-  { key: 'port', label: '监听端口', desc: '网关 HTTP 监听端口', type: 'number', default: 8787, group: '服务' },
-  { key: 'admin_token', label: '管理 Token', desc: '访问管理面板所需的 X-Admin-Token', type: 'text', default: '', group: '服务' },
-  { key: 'gateway_token', label: '下游网关 Token', desc: '下游客户端调用 /v1/chat/completions 的鉴权 Token', type: 'text', default: '', group: '服务' },
-  // 限流
-  { key: 'default_rpm', label: '默认 RPM', desc: '每个 NVIDIA 密钥的官方限流（40 RPM）', type: 'number', default: 40, group: '限流调度' },
-  { key: 'dispatch_concurrency', label: 'N 路并发度', desc: '热模型同时发起的请求数（先到先得）', type: 'number', default: 3, group: '限流调度' },
-  { key: 'circuit_threshold', label: '熔断阈值', desc: '连续失败几次触发熔断', type: 'number', default: 5, group: '限流调度' },
-  // 上游
-  { key: 'chat_domain', label: 'Chat 域名', desc: '对话补全上游域名', type: 'text', default: 'integrate.api.nvidia.com', group: '上游 NVIDIA' },
-  { key: 'retrieval_domain', label: 'Embedding 域名', desc: '向量 / 重排上游域名', type: 'text', default: 'ai.api.nvidia.com', group: '上游 NVIDIA' },
-  { key: 'timeout_sec', label: '上游超时', desc: '单次上游请求超时秒数', type: 'number', default: 120, group: '上游 NVIDIA' },
-  // 同步
-  { key: 'model_sync_interval', label: '模型同步间隔', desc: '从 /v1/models 同步的周期（小时）', type: 'number', default: 24, group: '模型同步' },
-  // 运维
-  { key: 'log_level', label: '日志级别', desc: '记录到数据库的最低级别', type: 'text', default: 'INFO', group: '运维日志' },
-  { key: 'log_retention_days', label: '日志保留', desc: '请求日志保留天数', type: 'number', default: 30, group: '运维日志' },
+  // 限流调度
+  { key: 'default_concurrency', label: '默认并发度', desc: 'N 路并发的先到先得路数（热模型同时发起的请求数）', group: '调度' },
+  { key: 'max_concurrency', label: '最大并发上限', desc: '并发上限，防止失控（必须 ≥ 默认并发度）', group: '调度' },
+  { key: 'request_timeout_sec', label: '请求超时（秒）', desc: '整体请求超时（含重试与 N 路等待）', group: '调度' },
+  // 熔断
+  { key: 'circuit_threshold', label: '熔断阈值', desc: '连续失败几次触发熔断', group: '熔断' },
+  { key: 'circuit_cooldown_sec', label: '熔断冷却（秒）', desc: '初始冷却时长，触发后按指数退避（上限 10 分钟）', group: '熔断' },
 ]
 
 export default function Settings() {
   const { t } = useTranslation()
-  const [values, setValues] = useState<Record<string, any>>(
-    Object.fromEntries(FIELDS.map((f) => [f.key, f.default]))
-  )
+  const [orig, setOrig] = useState<SchedulerSettings | null>(null) // 服务端当前值（恢复用）
+  const [values, setValues] = useState<SchedulerSettings>({
+    circuit_threshold: 5,
+    circuit_cooldown_sec: 30,
+    default_concurrency: 5,
+    max_concurrency: 10,
+    request_timeout_sec: 180,
+  })
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [tab, setTab] = useState('服务')
+  const [error, setError] = useState('')
+  const [tab, setTab] = useState('调度')
+
+  const load = async () => {
+    try {
+      const s = await api.getSettings()
+      setOrig(s)
+      setValues(s)
+    } catch (e: any) {
+      setError(e.message || '加载失败')
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => { load() }, [])
 
   const groups = [...new Set(FIELDS.map((f) => f.group))]
   const visible = FIELDS.filter((f) => f.group === tab)
 
-  const save = () => {
-    // 阶段一：仅本地预览，后续接入 /api/admin/settings 持久化
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+  // 是否有字段被改动（与 orig 对比）
+  const dirty = orig !== null && FIELDS.some((f) => values[f.key] !== orig[f.key])
+
+  const set = (k: keyof SchedulerSettings, v: number) => setValues({ ...values, [k]: v })
+
+  const save = async () => {
+    setError('')
+    setSaving(true)
+    try {
+      const r = await api.putSettings(values)
+      const next = r.settings
+      setOrig(next)
+      setValues(next)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (e: any) {
+      setError(e.message || '保存失败')
+    }
+    setSaving(false)
   }
 
-  const set = (k: string, v: any) => setValues({ ...values, [k]: v })
+  const reset = () => {
+    if (orig) setValues(orig)
+    setError('')
+  }
 
   return (
     <>
-      <PageHeader title={t('nav.settings')} en="Settings" subtitle="网关全局配置（阶段一为本地预览，后续将持久化到 settings 表）" />
+      <PageHeader title={t('nav.settings')} en="Settings" subtitle="熔断 / 调度运行时配置，保存后即时热生效并持久化（重启不丢失）" />
 
-      <div className="flex gap-5">
-        {/* 分组 Tab */}
-        <div className="w-[160px] flex-shrink-0">
-          <div className="glass-card p-2">
-            {groups.map((g) => (
-              <button
-                key={g}
-                onClick={() => setTab(g)}
-                className={`w-full text-left px-3 py-2 rounded-lg text-[12.5px] font-medium transition-colors ${
-                  tab === g ? 'bg-nv-green/10 text-nv-green border border-nv-green/20' : 'text-gray-400 hover:bg-white/[0.03] border border-transparent'
-                }`}
-              >
-                {g}
-              </button>
-            ))}
+      {loading ? (
+        <div className="text-gray-500 text-sm py-8 text-center">加载中…</div>
+      ) : (
+        <div className="flex gap-5">
+          {/* 分组 Tab */}
+          <div className="w-[160px] flex-shrink-0">
+            <div className="glass-card p-2">
+              {groups.map((g) => (
+                <button
+                  key={g}
+                  onClick={() => setTab(g)}
+                  className={`w-full text-left px-3 py-2 rounded-lg text-[12.5px] font-medium transition-colors ${
+                    tab === g ? 'bg-nv-green/10 text-nv-green border border-nv-green/20' : 'text-gray-400 hover:bg-white/[0.03] border border-transparent'
+                  }`}
+                >
+                  {g}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
 
-        {/* 字段 */}
-        <div className="flex-1 space-y-3">
-          {visible.map((f) => (
-            <Card key={f.key} className="!p-4">
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex-1">
-                  <div className="text-[13px] font-semibold text-gray-200">{f.label}</div>
-                  <div className="text-[11px] text-gray-600 mt-0.5">{f.desc}</div>
-                </div>
-                <div className="w-[260px] flex-shrink-0">
-                  {f.type === 'switch' ? (
-                    <button
-                      onClick={() => set(f.key, !values[f.key])}
-                      className={`relative w-11 h-6 rounded-full transition-colors ${values[f.key] ? 'bg-nv-green' : 'bg-white/[0.08]'}`}
-                    >
-                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${values[f.key] ? 'translate-x-5' : ''}`} />
-                    </button>
-                  ) : (
+          {/* 字段 */}
+          <div className="flex-1 space-y-3">
+            {visible.map((f) => (
+              <Card key={f.key} className="!p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex-1">
+                    <div className="text-[13px] font-semibold text-gray-200">{f.label}</div>
+                    <div className="text-[11px] text-gray-600 mt-0.5">{f.desc}</div>
+                  </div>
+                  <div className="w-[120px] flex-shrink-0">
                     <input
-                      type={f.type === 'number' ? 'number' : 'text'}
+                      type="number"
                       className="input"
                       value={values[f.key]}
-                      onChange={(e) => set(f.key, f.type === 'number' ? +e.target.value : e.target.value)}
+                      onChange={(e) => set(f.key, +e.target.value)}
                     />
-                  )}
+                  </div>
                 </div>
-              </div>
-            </Card>
-          ))}
+              </Card>
+            ))}
 
-          {/* 操作 */}
-          <div className="flex justify-end gap-2 pt-2">
-            <button onClick={() => setValues(Object.fromEntries(FIELDS.map((f) => [f.key, f.default])))} className="btn-ghost">恢复默认</button>
-            <button onClick={save} className="btn-primary">
-              {saved ? '✓ 已保存' : t('common.save')}
-            </button>
+            {/* 操作 */}
+            <div className="flex items-center justify-between pt-2">
+              <div className="text-[11px] text-red-400 min-h-[16px]">{error}</div>
+              <div className="flex gap-2">
+                <button onClick={reset} disabled={!dirty || saving} className="btn-ghost disabled:opacity-40">
+                  恢复原值
+                </button>
+                <button onClick={save} disabled={!dirty || saving} className="btn-primary disabled:opacity-40">
+                  {saving ? t('common.saving') : saved ? '✓ 已保存' : t('common.save')}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </>
   )
 }

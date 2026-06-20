@@ -22,6 +22,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nslmcrs/gateway/internal/data"
+	"github.com/nslmcrs/gateway/internal/modelcatalog"
 	"github.com/nslmcrs/gateway/internal/modelmeta"
 	"github.com/nslmcrs/gateway/internal/protocol"
 	"github.com/nslmcrs/gateway/internal/scheduler"
@@ -243,8 +244,35 @@ func (h *Handler) handleCompletions(c *gin.Context) {
 
 // --- Models ---
 
+// handleListModels 公开模型列表（OpenAI 兼容 /v1/models）。
+//
+// 默认仅返回可对话能力（chat/reasoning/code/vision），避免把嵌入/重排序/安全等
+// 非 chat 模型暴露给 /v1/chat/completions 客户端。查询参数：
+//
+//	?capability=<cap>   仅返回指定能力（chat/embedding/rerank/...）
+//	?all=true            返回全部可用模型（不做能力过滤，含嵌入/重排序等）
 func (h *Handler) handleListModels(c *gin.Context) {
-	models, err := h.store.ListActiveModels(c.Request.Context())
+	var (
+		models []data.Model
+		err    error
+	)
+	if capq := strings.TrimSpace(c.Query("capability")); capq != "" {
+		models, err = h.store.ListActiveModelsByCapability(c.Request.Context(), capq)
+	} else if c.Query("all") == "true" {
+		models, err = h.store.ListActiveModels(c.Request.Context())
+	} else {
+		// 默认：全部可用模型再按「可对话」过滤
+		all, e := h.store.ListActiveModels(c.Request.Context())
+		if e != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "查询模型列表失败"}})
+			return
+		}
+		for _, m := range all {
+			if modelcatalog.IsChatCapable(m.Capability) {
+				models = append(models, m)
+			}
+		}
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "查询模型列表失败"}})
 		return

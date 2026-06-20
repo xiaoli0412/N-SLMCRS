@@ -14,8 +14,8 @@ import {
 // 三种模式：手动 / 辅助 / 全自动
 const MODES = [
   { id: 'manual', name: '手动模式', en: 'Manual', icon: '✋', desc: '完全人工操作，调度器仅按权重轮询，不自动干预' },
-  { id: 'assisted', name: '辅助模式', en: 'Assisted', icon: '🤝', desc: 'AI 给出建议与告警，但需人工确认后才执行变更' },
-  { id: 'fullauto', name: '全自动模式', en: 'Full-Auto', icon: '🚀', desc: 'AI 全权接管密钥启停 / 限流回退 / 熔断，零干预' },
+  { id: 'assisted', name: '辅助模式', en: 'Assisted', icon: '🤝', desc: '可逆调参（并发/权重）即时生效；破坏性动作（禁用/熔断/吊销）进待审队列' },
+  { id: 'fullauto', name: '全自动模式', en: 'Full-Auto', icon: '🚀', desc: 'AI 全权接管密钥启停 / 限流回退 / 熔断，零干预（破坏性动作需置信度≥0.7）' },
 ] as const
 
 // 三种引擎：自适应算法 / 轻量预测 / LLM 决策
@@ -221,7 +221,7 @@ export default function AutoPilot() {
                 </div>
                 <div className="text-[10.5px] text-gray-600 mt-1">
                   {mode === 'manual' && 'AI 仅观察，不执行任何自动变更'}
-                  {mode === 'assisted' && 'AI 建议将推送至运维面板，等待人工确认'}
+                  {mode === 'assisted' && '可逆调参即时生效；破坏性动作进待审队列等人工确认'}
                   {mode === 'fullauto' && 'AI 将自动启停密钥、调整权重、触发熔断'}
                 </div>
                 <div className="mt-2 pt-2 border-t border-white/[0.04] text-[10.5px] text-gray-500 flex justify-between">

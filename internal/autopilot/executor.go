@@ -19,7 +19,8 @@ const pendingPrefix = "autopilot:pending:"
 // Executor 按 mode 决定动作执行边界。
 //
 //	manual   → 仅写审计(app_logs)，不执行任何变更
-//	assisted → 破坏性动作写 pending(settings) 等人工确认；可逆调参仍写审计
+//	assisted → 可逆调参(set_concurrency/set_weight_boost)即时写 Runtime 生效；
+//	           破坏性动作(disable_key/open_circuit/revoke_credential)写 pending(settings) 等人工确认
 //	fullauto → 直接执行全部动作（调参写 Runtime，破坏性落库）
 type Executor struct {
 	store   *data.Store
@@ -54,14 +55,19 @@ func (e *Executor) Apply(ctx context.Context, mode Mode, actions []Action) int {
 
 		case ModeAssisted:
 			if isDestructive(a.Kind) {
-				// 破坏性动作写 pending 待确认
+				// 破坏性动作写 pending 待人工确认
 				if err := e.writePending(ctx, a); err == nil {
-					e.logAudit(ctx, a, false, "assisted:已写入pending")
+					e.logAudit(ctx, a, false, "assisted:破坏性动作已写入pending")
 				}
 			} else {
-				// 可逆调参：在 assisted 下也只记录，等确认
-				e.recordEvent(ctx, a, false)
-				e.logAudit(ctx, a, false, "assisted:待确认")
+				// 可逆调参：即时写 Runtime 生效（仍记录审计，便于追溯）
+				if err := e.execute(ctx, a); err != nil {
+					e.logAudit(ctx, a, false, fmt.Sprintf("assisted:可逆调参执行失败 %v", err))
+					continue
+				}
+				applied++
+				e.recordEvent(ctx, a, true)
+				e.logAudit(ctx, a, true, "assisted:可逆调参即时生效")
 			}
 
 		case ModeFullAuto:

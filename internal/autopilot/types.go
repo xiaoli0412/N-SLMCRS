@@ -10,7 +10,7 @@
 //	       └─ LLM       (stub→真 LLM)
 //	  └─ Executor.apply(actions, mode)
 //	       manual   → 仅记录(observe)
-//	       assisted → 写 pending 待人工确认
+//	       assisted → 可逆调参即时写 Runtime；破坏性动作写 pending 待人工确认
 //	       fullauto → 直接执行（调参/启停/熔断/吊销）
 package autopilot
 

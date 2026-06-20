@@ -154,16 +154,29 @@ func TestExecutor_AssistedWritesPending(t *testing.T) {
 	}
 }
 
-// TestExecutor_AssistedReversibleNotExecuted assisted 下可逆调参也不直接执行（待确认）。
-func TestExecutor_AssistedReversibleNotExecuted(t *testing.T) {
+// TestExecutor_AssistedReversibleAppliesImmediately assisted 下可逆调参即时写 Runtime 生效。
+func TestExecutor_AssistedReversibleAppliesImmediately(t *testing.T) {
 	store := newTestStore(t)
 	rt := NewRuntime()
 	exec := NewExecutor(store, rt)
+	keyID := seedKey(t, store, "revkey")
 
-	act := Action{Kind: ActSetConcurrency, Value: 4, Confidence: 0.9, Source: EngineAdaptive}
-	exec.Apply(context.Background(), ModeAssisted, []Action{act})
-
-	if rt.Concurrency() != 0 {
-		t.Fatalf("assisted 不应直接写 Runtime，Concurrency=%d", rt.Concurrency())
+	acts := []Action{
+		{Kind: ActSetConcurrency, Value: 4, Confidence: 0.9, Source: EngineAdaptive},
+		{Kind: ActSetWeightBoost, KeyID: keyID, Value: 0.3, Confidence: 0.9, Source: EngineAdaptive},
+	}
+	applied := exec.Apply(context.Background(), ModeAssisted, acts)
+	if applied != 2 {
+		t.Fatalf("assisted 可逆动作应即时执行，applied=%d", applied)
+	}
+	if rt.Concurrency() != 4 {
+		t.Fatalf("assisted 应即时写 Runtime 并发度=4，得到 %d", rt.Concurrency())
+	}
+	if rt.WeightBoost(keyID) != 0.3 {
+		t.Fatalf("assisted 应即时写 WeightBoost=0.3，得到 %v", rt.WeightBoost(keyID))
+	}
+	// 可逆动作不应进 pending
+	if n := exec.CountPending(context.Background()); n != 0 {
+		t.Fatalf("assisted 可逆动作不应进 pending，剩余 %d", n)
 	}
 }

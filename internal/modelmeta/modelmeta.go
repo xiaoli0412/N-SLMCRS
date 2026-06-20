@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nslmcrs/gateway/internal/data"
+	"github.com/nslmcrs/gateway/internal/modelcatalog"
 	"github.com/nslmcrs/gateway/internal/upstream"
 )
 
@@ -122,14 +123,19 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 
 	models := make([]data.Model, len(resp.Data))
 	for i, m := range resp.Data {
+		// 富元数据补齐：策展表精确命中优先，否则启发式分类 + 参数解析。
+		// NVIDIA /v1/models 不返回能力/上下文/参数量，全靠 modelcatalog 推导。
+		em := modelcatalog.Enrich(m.ID)
 		models[i] = data.Model{
-			ID:       m.ID,
-			Object:   m.Object,
-			Created:  m.Created,
-			OwnedBy:  m.OwnedBy,
-			Root:     m.Root,
-			// capability 默认 chat，Phase 2 从模型卡增强
-			Capability: "chat",
+			ID:            m.ID,
+			Object:        m.Object,
+			Created:       m.Created,
+			OwnedBy:       m.OwnedBy,
+			Root:          m.Root,
+			Capability:    em.Capability,
+			ParamCount:    em.ParamCount,
+			ContextLength: em.ContextLength,
+			Description:   em.Description,
 		}
 	}
 

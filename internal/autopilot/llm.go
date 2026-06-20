@@ -10,9 +10,9 @@ import (
 // LLMEngine 用大模型做可解释的复杂决策。
 //
 // 设计：prompt 构造 + JSON 解析齐全；上游 LLMBackend 可切换。
-// - stubBackend（默认）：返回模板 JSON（确定性策略），保证 stub 也能产出可执行 Action。
-// - gatewayBackend（预留）：调自身网关 /v1/chat/completions。
-// 配置 LLM_API_KEY/LLM_BASE_URL 留空时用 stub；填了则接真实。
+// - stubBackend：返回模板 JSON（确定性策略），保证 stub 也能产出可执行 Action。
+// - gatewayBackend：调自身网关 /v1/chat/completions（环境变量 LLM_BASE_URL/LLM_API_KEY/LLM_MODEL 齐全时启用）。
+// 配置缺失时用 stub；齐全则接真实 LLM 网关调用。
 type LLMEngine struct {
 	backend LLMBackend
 }

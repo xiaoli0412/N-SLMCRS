@@ -47,6 +47,56 @@ export interface BulkImportItem {
   reason?: string
 }
 
+// --- 模型广场 ---
+
+// 模型能力类型（与后端 internal/modelcatalog 能力常量对齐）。
+export type ModelCapability =
+  | 'chat'
+  | 'reasoning'
+  | 'code'
+  | 'vision'
+  | 'embedding'
+  | 'rerank'
+  | 'safety'
+  | 'reward'
+  | 'translation'
+  | 'parsing'
+
+// ModelView 对应后端 admin.modelView（GET /api/admin/models 与 /api/admin/models/plaza 的条目）。
+// 旧版前端误读了 model_id/status/alternative/last_checked 等不存在的字段，这里对齐真实契约。
+export interface ModelView {
+  id: string
+  object: string
+  created: number
+  owned_by: string
+  root: string
+  capability: ModelCapability | string
+  param_count: string
+  context_length: number
+  description: string
+  is_active: boolean
+  synced_at: number
+  // 用量统计（近 1h）
+  request_count: number
+  success_rate: number // 0..100
+}
+
+export interface ModelListResp {
+  data: ModelView[]
+  last_sync: number
+  total: number
+}
+
+// SchedulerSettings 熔断 / 调度运行时配置（GET /api/admin/settings 返回的顶层对象）。
+// 时长字段以「秒」为单位，与后端 settingsView 契约对齐。
+export interface SchedulerSettings {
+  circuit_threshold: number
+  circuit_cooldown_sec: number
+  default_concurrency: number
+  max_concurrency: number
+  request_timeout_sec: number
+}
+
 export interface Credential {
   id: number
   credential_mask: string
@@ -160,9 +210,25 @@ export const api = {
     request<{ data: any[] }>(`/api/admin/timeseries?window=${window}&bucket=${bucket}`),
   getKeyHealth: (window = '1h') =>
     request<{ data: any[] }>(`/api/admin/key-health?window=${window}`),
-  // 模型
-  listModels: () => request<{ data: any[] }>('/api/admin/models'),
-  syncModels: () => request('/api/admin/models/sync', { method: 'POST' }),
+  // 模型广场
+  // listModels: 全部模型（含已失效），带用量统计。
+  listModels: () => request<ModelListResp>('/api/admin/models'),
+  // listModelsPlaza: 模型广场视图，支持 capability 过滤与仅可用过滤。
+  listModelsPlaza: (params?: { capability?: string; active_only?: boolean }) => {
+    const qs = new URLSearchParams()
+    if (params?.capability) qs.set('capability', params.capability)
+    qs.set('active_only', params?.active_only === false ? 'false' : 'true')
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return request<ModelListResp>(`/api/admin/models/plaza${suffix}`)
+  },
+  syncModels: () => request<{ ok: boolean }>('/api/admin/models/sync', { method: 'POST' }),
+  // 熔断 / 调度运行时配置（GET 返回当前值；PUT 落库 + 热生效，返回更新后的 settings）
+  getSettings: () => request<SchedulerSettings>('/api/admin/settings'),
+  putSettings: (s: SchedulerSettings) =>
+    request<{ ok: boolean; settings: SchedulerSettings }>('/api/admin/settings', {
+      method: 'PUT',
+      body: JSON.stringify(s),
+    }),
   // 日志
   getLogs: (params: string) => request<{ data: any[] }>(`/api/admin/logs${params}`),
   // Auto-Pilot

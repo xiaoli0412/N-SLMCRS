@@ -24,7 +24,7 @@ func newTestHandler(t *testing.T) (*gin.Engine, *data.Store) {
 	t.Cleanup(func() { store.Close() })
 
 	cfg := &config.Config{
-		Server: config.ServerConfig{Port: 8787, AdminToken: "admin"},
+		Server: config.ServerConfig{Port: 8787, AdminToken: config.DefaultAdminToken},
 	}
 	h := New(store, nil, cfg)
 	r := gin.New()
@@ -77,9 +77,9 @@ func TestAuthStatus_InitialState(t *testing.T) {
 func TestLogin_DefaultToken(t *testing.T) {
 	r, _ := newTestHandler(t)
 	// 正确默认令牌
-	w := doJSON(t, r, "POST", "/api/admin/login", "", map[string]string{"token": "admin"})
+	w := doJSON(t, r, "POST", "/api/admin/login", "", map[string]string{"token": config.DefaultAdminToken})
 	if w.Code != 200 {
-		t.Fatalf("login(admin) code=%d body=%s", w.Code, w.Body.String())
+		t.Fatalf("login(ADMIN) code=%d body=%s", w.Code, w.Body.String())
 	}
 	m := decodeBody(t, w)
 	if m["ok"] != true {
@@ -97,30 +97,35 @@ func TestLogin_DefaultToken(t *testing.T) {
 
 func TestChangePassword_FullFlow(t *testing.T) {
 	r, store := newTestHandler(t)
+	def := config.DefaultAdminToken
 
-	// 受保护端点：用默认 admin 应放行，但响应头带 must-change
-	w := doJSON(t, r, "GET", "/api/admin/keys", "admin", nil)
-	if w.Code != 200 {
-		t.Fatalf("默认令牌访问 keys code=%d body=%s", w.Code, w.Body.String())
+	// 受保护端点：默认令牌在改密前被锁定 → 403 + must_change_password
+	w := doJSON(t, r, "GET", "/api/admin/keys", def, nil)
+	if w.Code != 403 {
+		t.Fatalf("默认令牌访问 keys 应被锁定 code=%d body=%s", w.Code, w.Body.String())
 	}
 	if w.Header().Get("X-Admin-Must-Change") != "1" {
-		t.Error("默认令牌响应头应带 X-Admin-Must-Change: 1")
+		t.Error("锁定响应头应带 X-Admin-Must-Change: 1")
 	}
-	// 错误令牌被拒
+	// 错误令牌被拒（401）
 	w = doJSON(t, r, "GET", "/api/admin/keys", "nope", nil)
 	if w.Code != 401 {
 		t.Errorf("错误令牌 code=%d, want 401", w.Code)
 	}
 
 	// 改密：拒绝过短
-	w = doJSON(t, r, "POST", "/api/admin/change-password", "", map[string]string{"current": "admin", "next": "123"})
+	w = doJSON(t, r, "POST", "/api/admin/change-password", "", map[string]string{"current": def, "next": "123"})
 	if w.Code != 400 {
 		t.Errorf("过短新令牌 code=%d, want 400", w.Code)
 	}
-	// 改密：拒绝 admin
-	w = doJSON(t, r, "POST", "/api/admin/change-password", "", map[string]string{"current": "admin", "next": "admin"})
+	// 改密：拒绝 ADMIN（默认值，大小写无关）
+	w = doJSON(t, r, "POST", "/api/admin/change-password", "", map[string]string{"current": def, "next": "admin"})
 	if w.Code != 400 {
-		t.Errorf("新令牌=admin code=%d, want 400", w.Code)
+		t.Errorf("新令牌=admin(默认) code=%d, want 400", w.Code)
+	}
+	w = doJSON(t, r, "POST", "/api/admin/change-password", "", map[string]string{"current": def, "next": "ADMIN"})
+	if w.Code != 400 {
+		t.Errorf("新令牌=ADMIN(默认) code=%d, want 400", w.Code)
 	}
 	// 改密：current 错误
 	w = doJSON(t, r, "POST", "/api/admin/change-password", "", map[string]string{"current": "bad", "next": "newsecret123"})
@@ -128,7 +133,7 @@ func TestChangePassword_FullFlow(t *testing.T) {
 		t.Errorf("current 错误 code=%d, want 401", w.Code)
 	}
 	// 改密：成功
-	w = doJSON(t, r, "POST", "/api/admin/change-password", "", map[string]string{"current": "admin", "next": "newsecret123"})
+	w = doJSON(t, r, "POST", "/api/admin/change-password", "", map[string]string{"current": def, "next": "newsecret123"})
 	if w.Code != 200 {
 		t.Fatalf("change-password code=%d body=%s", w.Code, w.Body.String())
 	}
@@ -139,12 +144,12 @@ func TestChangePassword_FullFlow(t *testing.T) {
 		t.Fatal("改密后 admin:token_hash 应已写入")
 	}
 
-	// 旧默认令牌失效
-	w = doJSON(t, r, "GET", "/api/admin/keys", "admin", nil)
+	// 旧默认令牌失效（401）
+	w = doJSON(t, r, "GET", "/api/admin/keys", def, nil)
 	if w.Code != 401 {
 		t.Errorf("改密后旧默认令牌 code=%d, want 401", w.Code)
 	}
-	// 新令牌生效，且不再强制改密
+	// 新令牌生效，且不再锁定（200）
 	w = doJSON(t, r, "GET", "/api/admin/keys", "newsecret123", nil)
 	if w.Code != 200 {
 		t.Errorf("新令牌 code=%d, want 200", w.Code)
@@ -162,7 +167,7 @@ func TestChangePassword_FullFlow(t *testing.T) {
 
 func TestAuthStatus_AfterChange(t *testing.T) {
 	r, _ := newTestHandler(t)
-	_ = doJSON(t, r, "POST", "/api/admin/change-password", "", map[string]string{"current": "admin", "next": "anotherpw1"})
+	_ = doJSON(t, r, "POST", "/api/admin/change-password", "", map[string]string{"current": config.DefaultAdminToken, "next": "anotherpw1"})
 	w := doJSON(t, r, "GET", "/api/admin/auth/status", "", nil)
 	m := decodeBody(t, w)
 	if m["must_change_password"] != false {

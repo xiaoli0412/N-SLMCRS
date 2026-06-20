@@ -41,13 +41,15 @@ type Controller struct {
 
 // NewController 创建总控。
 // maxConcurrency/defaultConcurrency 用于快照与并发决策钳位。
+// LLM 引擎后端：环境变量 LLM_BASE_URL/LLM_API_KEY/LLM_MODEL 齐全时接真实网关，
+// 否则回退 stubBackend（确定性模板策略）。
 func NewController(store *data.Store, health *ratelimit.HealthTracker, rl *ratelimit.Manager,
 	rt *Runtime, healthWindow time.Duration, defaultConcurrency, maxConcurrency int) *Controller {
 	exec := NewExecutor(store, rt)
 	engines := map[EngineID]Engine{
 		EngineAdaptive: NewAdaptiveEngine(),
 		EngineForecast: NewForecastEngine(),
-		EngineLLM:      NewLLMEngine(nil), // nil → stubBackend
+		EngineLLM:      NewLLMEngine(newGatewayBackendFromEnv()),
 	}
 	return &Controller{
 		store:   store,

@@ -32,8 +32,8 @@ import (
 	"github.com/nslmcrs/gateway/internal/upstream"
 )
 
-// version 通过 -ldflags "-X main.version=..." 注入；默认 v0.3.0。
-var version = "v0.3.0"
+// version 通过 -ldflags "-X main.version=..." 注入；默认 v0.4.0。
+var version = "v0.4.0"
 
 func main() {
 	// -version：打印版本后退出（供 Docker healthcheck 与运维探活使用）
@@ -83,19 +83,25 @@ func main() {
 		HealthWindow:       2 * time.Minute,
 	})
 
+	// 后台任务根上下文（优雅关闭时取消）；提前创建以便启动阶段复用
+	rootCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// 5b. Auto-Pilot：共享 Runtime 注入调度器，Controller 周期决策 → Executor 写 Runtime/落库
 	apRuntime := autopilot.NewRuntime()
 	sched.SetRuntime(apRuntime)
 	apCtrl := autopilot.NewController(store, health, rlMgr, apRuntime,
 		2*time.Minute, cfg.Scheduler.DefaultConcurrency, cfg.Scheduler.MaxConcurrency)
 
+	// 5c. 启动时加载已持久化的熔断/调度覆盖（来自 settings 表）并应用到调度器
+	if err := admin.LoadPersistedSchedulerOverrides(rootCtx, sched, store); err != nil {
+		log.Printf("[WARN] 加载已持久化的调度覆盖失败: %v", err)
+	}
+
 	// 6. 失效检测 + 模型同步
 	checker := modelmeta.NewStalenessChecker(store)
 	syncer := modelmeta.NewSyncer(store, client, cfg.Upstream.ModelSyncInterval)
 
-	// 后台任务根上下文（优雅关闭时取消）
-	rootCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	go apCtrl.Start(rootCtx) // Auto-Pilot 30s 决策循环
 	go syncer.Start(rootCtx) // 模型目录同步
 
@@ -120,6 +126,7 @@ func main() {
 	// 管理 API（鉴权由 Handler 持有，token 默认 admin + 首次强制改密）
 	adminHandler := admin.New(store, syncer, cfg)
 	adminHandler.SetAutopilot(apCtrl)
+	adminHandler.SetScheduler(sched)
 	adminHandler.RegisterRoutes(r)
 
 	// 前端静态资源 + SPA 兜底（最后注册）

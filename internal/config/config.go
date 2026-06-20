@@ -40,6 +40,10 @@ type ServerConfig struct {
 	AdminToken string
 }
 
+// DefaultAdminToken 首次启动的初始管理令牌。
+// 未设置 ADMIN_TOKEN 时使用；首次登录后必须强制改密，改密前所有受保护管理 API 被锁定。
+const DefaultAdminToken = "ADMIN"
+
 // UpstreamConfig NVIDIA 上游配置。
 type UpstreamConfig struct {
 	// ChatBaseURL 对话/补全/模型列表上游
@@ -85,12 +89,13 @@ func Load() (*Config, error) {
 	// .env 可选（容器/裸机可能只用环境变量）
 	_ = godotenv.Load()
 
-	cfg := &Config{
-		Server: ServerConfig{
-			Port:       envInt("PORT", 8787),
-			// 默认初始令牌 "admin"：首次登录后强制修改并写入 bcrypt 哈希。
-			AdminToken: envStr("ADMIN_TOKEN", "admin"),
-		},
+		cfg := &Config{
+			Server: ServerConfig{
+				Port: envInt("PORT", 8787),
+				// 默认初始令牌 "ADMIN"：首次登录后强制修改并写入 bcrypt 哈希。
+				// 改密前所有受保护的管理 API 一律拒绝（见 admin.AuthMiddleware 锁定）。
+				AdminToken: envStr("ADMIN_TOKEN", DefaultAdminToken),
+			},
 		Upstream: UpstreamConfig{
 			ChatBaseURL:        envStr("NVIDIA_CHAT_BASE_URL", "https://integrate.api.nvidia.com/v1"),
 			RetrievalBaseURL:   envStr("NVIDIA_RETRIEVAL_BASE_URL", "https://ai.api.nvidia.com/v1"),

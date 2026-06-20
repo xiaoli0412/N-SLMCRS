@@ -17,7 +17,10 @@
 //   GET    /api/admin/timeseries         时序曲线（?window=1h&bucket=60）
 //   GET    /api/admin/key-health         每 Key 健康
 //   GET    /api/admin/models             模型目录（含失效）
-//   POST   /api/admin/models/sync        立即同步模型
+//   GET    /api/admin/models/plaza        模型广场视图（capability 过滤 + 用量统计）
+//   POST   /api/admin/models/sync         立即同步模型
+//   GET    /api/admin/settings            读取熔断/调度运行时配置
+//   PUT    /api/admin/settings            更新熔断/调度运行时配置（落库 + 热生效）
 //   GET    /api/admin/logs               查询日志
 // Phase 3 端点（Auto-Pilot）：
 //   GET    /api/admin/autopilot/state                 完整状态
@@ -44,6 +47,7 @@ import (
 	"github.com/nslmcrs/gateway/internal/config"
 	"github.com/nslmcrs/gateway/internal/data"
 	"github.com/nslmcrs/gateway/internal/modelmeta"
+	"github.com/nslmcrs/gateway/internal/scheduler"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -57,11 +61,18 @@ type Handler struct {
 	syncer *modelmeta.Syncer
 	cfg    *config.Config
 	ap     *autopilot.Controller // Auto-Pilot 总控（可选；main.go 装配后注入）
+	sched  *scheduler.Scheduler  // 调度器（可选；用于运行时改熔断/并发配置）
 }
 
 // New 创建管理 API 处理器。
 func New(store *data.Store, syncer *modelmeta.Syncer, cfg *config.Config) *Handler {
 	return &Handler{store: store, syncer: syncer, cfg: cfg}
+}
+
+// SetScheduler 注入调度器（启用 /api/admin/settings 运行时配置读写）。
+func (h *Handler) SetScheduler(s *scheduler.Scheduler) *Handler {
+	h.sched = s
+	return h
 }
 
 // tokenFromRequest 从请求中提取管理令牌（X-Admin-Token 或 Bearer）。
@@ -108,8 +119,10 @@ func (h *Handler) mustChangePassword(ctx context.Context) bool {
 }
 
 // AuthMiddleware 管理 API 鉴权（ADMIN_TOKEN 或 bcrypt 哈希）。
-// 初始默认令牌状态下，所有受保护请求仍放行，但通过响应头
-// X-Admin-Must-Change: 1 提示前端弹出强制改密框。
+//
+// 安全锁定：若仍处于「首次登录需强制改密」状态（无 bcrypt 哈希且配置了默认令牌），
+// 所有受保护端点一律返回 403 + must_change_password=true，拒绝任何管理操作。
+// 仅 /api/admin/login、/api/admin/change-password、/api/admin/auth/status 可用（注册在中间件组外）。
 func (h *Handler) AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := tokenFromRequest(c)
@@ -124,8 +137,16 @@ func (h *Handler) AuthMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		// 强制改密锁定：默认令牌状态下拒绝所有管理操作
 		if isDefault {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":                 "首次登录必须先修改管理令牌",
+				"type":                  "must_change_password",
+				"must_change_password":  true,
+			})
 			c.Header("X-Admin-Must-Change", "1")
+			c.Abort()
+			return
 		}
 		c.Next()
 	}
@@ -159,7 +180,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		g.GET("/key-health", h.getKeyHealth)
 
 		g.GET("/models", h.listModels)
+		g.GET("/models/plaza", h.listModelsPlaza)
 		g.POST("/models/sync", h.syncModels)
+
+		g.GET("/settings", h.getSettings)
+		g.PUT("/settings", h.putSettings)
 
 		g.GET("/logs", h.getLogs)
 
@@ -232,8 +257,9 @@ func (h *Handler) changePassword(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "新令牌至少 6 个字符"})
 		return
 	}
-	if next == "admin" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "新令牌不能使用默认值 admin"})
+	// 拒绝使用初始默认令牌（大小写无关，含 "admin"/"ADMIN"）
+	if strings.EqualFold(next, config.DefaultAdminToken) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "新令牌不能使用初始默认值 " + config.DefaultAdminToken})
 		return
 	}
 	if next == current {
@@ -506,13 +532,95 @@ func (h *Handler) getKeyHealth(c *gin.Context) {
 
 // --- 模型 ---
 
+// modelView 模型广场富视图（契约对齐前端 Models.tsx）。
+// 旧版前端误读了 model_id/status/alternative 等不存在的字段，这里显式给出 JSON 标签。
+type modelView struct {
+	ID            string  `json:"id"`
+	Object        string  `json:"object"`
+	Created       int64   `json:"created"`
+	OwnedBy       string  `json:"owned_by"`
+	Root          string  `json:"root"`
+	Capability    string  `json:"capability"`
+	ParamCount    string  `json:"param_count"`
+	ContextLength int     `json:"context_length"`
+	Description   string  `json:"description"`
+	IsActive      bool    `json:"is_active"`
+	SyncedAt      int64   `json:"synced_at"`
+	// 用量统计（近 1h）
+	RequestCount int64   `json:"request_count"`
+	SuccessRate  float64 `json:"success_rate"` // 0..100
+}
+
+// toModelViews 将 data.Model 列表拼装为带用量统计的广场视图。
+func (h *Handler) toModelViews(ctx context.Context, ms []data.Model) []modelView {
+	usage, _ := h.store.ModelUsageStats(ctx, time.Hour)
+	views := make([]modelView, 0, len(ms))
+	for _, m := range ms {
+		u := usage[m.ID]
+		views = append(views, modelView{
+			ID: m.ID, Object: m.Object, Created: m.Created, OwnedBy: m.OwnedBy, Root: m.Root,
+			Capability: m.Capability, ParamCount: m.ParamCount, ContextLength: m.ContextLength,
+			Description: m.Description, IsActive: m.IsActive, SyncedAt: m.SyncedAt,
+			RequestCount: u.RequestCount, SuccessRate: u.SuccessRate,
+		})
+	}
+	return views
+}
+
+// listModels 列出全部模型（含已失效），带用量统计。
 func (h *Handler) listModels(c *gin.Context) {
 	ms, err := h.store.ListAllModels(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": ms})
+	views := h.toModelViews(c.Request.Context(), ms)
+	// 同步时间取最新一条（前端展示「上次同步」用）
+	var lastSync int64
+	for _, v := range views {
+		if v.SyncedAt > lastSync {
+			lastSync = v.SyncedAt
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": views, "last_sync": lastSync, "total": len(views)})
+}
+
+// listModelsPlaza 模型广场视图：支持 capability 过滤与仅可用过滤。
+//   GET /api/admin/models/plaza?capability=chat&active_only=true
+func (h *Handler) listModelsPlaza(c *gin.Context) {
+	capability := strings.TrimSpace(c.Query("capability"))
+	activeOnly := c.DefaultQuery("active_only", "true") == "true"
+
+	var (
+		ms  []data.Model
+		err error
+	)
+	if activeOnly {
+		ms, err = h.store.ListActiveModelsByCapability(c.Request.Context(), capability)
+	} else {
+		ms, err = h.store.ListAllModels(c.Request.Context())
+		if err == nil && capability != "" {
+			filtered := ms[:0]
+			for _, m := range ms {
+				if m.Capability == capability {
+					filtered = append(filtered, m)
+				}
+			}
+			ms = filtered
+		}
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	views := h.toModelViews(c.Request.Context(), ms)
+	var lastSync int64
+	for _, v := range views {
+		if v.SyncedAt > lastSync {
+			lastSync = v.SyncedAt
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": views, "last_sync": lastSync, "total": len(views)})
 }
 
 func (h *Handler) syncModels(c *gin.Context) {

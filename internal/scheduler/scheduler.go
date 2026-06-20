@@ -45,7 +45,8 @@ type Scheduler struct {
 	rl        *ratelimit.Manager
 	health    *ratelimit.HealthTracker
 	config    SchedulerConfig
-	runtime   RuntimeOverrides // 可选：Auto-Pilot 注入（nil=用默认）
+	mu        sync.RWMutex      // 保护 config 的运行时可变字段
+	runtime   RuntimeOverrides  // 可选：Auto-Pilot 注入（nil=用默认）
 }
 
 // SetRuntime 注入 Auto-Pilot 运行时覆盖（nil=清除，恢复默认）。
@@ -53,18 +54,87 @@ func (s *Scheduler) SetRuntime(rt RuntimeOverrides) {
 	s.runtime = rt
 }
 
+// Config 返回当前调度配置的快照（线程安全）。
+func (s *Scheduler) Config() SchedulerConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config
+}
+
+// UpdateConfig 运行时更新部分调度配置（熔断/并发/超时），零值字段保持不变。
+// 仅可变字段（DefaultConcurrency / MaxConcurrency / CircuitThreshold /
+// CircuitCooldown / RequestTimeout）受锁保护；HealthWindow 不支持热改。
+// 校验：DefaultConcurrency>0、MaxConcurrency>=DefaultConcurrency、
+// CircuitThreshold>0、CircuitCooldown>0、RequestTimeout>0。
+func (s *Scheduler) UpdateConfig(patch SchedulerConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.config
+	if patch.DefaultConcurrency > 0 {
+		next.DefaultConcurrency = patch.DefaultConcurrency
+	}
+	if patch.MaxConcurrency > 0 {
+		next.MaxConcurrency = patch.MaxConcurrency
+	}
+	if patch.CircuitThreshold > 0 {
+		next.CircuitThreshold = patch.CircuitThreshold
+	}
+	if patch.CircuitCooldown > 0 {
+		next.CircuitCooldown = patch.CircuitCooldown
+	}
+	if patch.RequestTimeout > 0 {
+		next.RequestTimeout = patch.RequestTimeout
+	}
+	// 校验合并后的一致性
+	if next.DefaultConcurrency <= 0 {
+		return fmt.Errorf("DefaultConcurrency 必须 > 0")
+	}
+	if next.MaxConcurrency < next.DefaultConcurrency {
+		return fmt.Errorf("MaxConcurrency 必须 >= DefaultConcurrency")
+	}
+	if next.CircuitThreshold <= 0 {
+		return fmt.Errorf("CircuitThreshold 必须 > 0")
+	}
+	if next.CircuitCooldown <= 0 {
+		return fmt.Errorf("CircuitCooldown 必须 > 0")
+	}
+	if next.RequestTimeout <= 0 {
+		return fmt.Errorf("RequestTimeout 必须 > 0")
+	}
+	s.config = next
+	return nil
+}
+
 // effectiveConcurrency 返回当前生效并发度：Runtime 覆盖优先于配置默认。
 func (s *Scheduler) effectiveConcurrency() int {
+	s.mu.RLock()
+	maxC := s.config.MaxConcurrency
+	defC := s.config.DefaultConcurrency
+	s.mu.RUnlock()
 	if s.runtime != nil {
 		if n := s.runtime.Concurrency(); n > 0 {
 			// 钳位到 MaxConcurrency
-			if s.config.MaxConcurrency > 0 && n > s.config.MaxConcurrency {
-				return s.config.MaxConcurrency
+			if maxC > 0 && n > maxC {
+				return maxC
 			}
 			return n
 		}
 	}
-	return s.config.DefaultConcurrency
+	return defC
+}
+
+// requestTimeout 返回当前请求超时（线程安全读取可变配置）。
+func (s *Scheduler) requestTimeout() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config.RequestTimeout
+}
+
+// circuitConfig 返回当前熔断配置快照（线程安全）。
+func (s *Scheduler) circuitConfig() (threshold int, cooldown time.Duration) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config.CircuitThreshold, s.config.CircuitCooldown
 }
 
 // SchedulerConfig 调度配置。
@@ -122,7 +192,7 @@ func (s *Scheduler) DispatchCap(ctx context.Context, cap upstream.Capability, tr
 	path := capPath(cap, model)
 
 	n := min(len(keys), s.effectiveConcurrency())
-	ctx, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.requestTimeout())
 	defer cancel()
 
 	// 上游调用闭包：按能力路由到正确端点
@@ -254,7 +324,7 @@ func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, r
 	}
 
 	n := min(len(keys), s.effectiveConcurrency())
-	ctx, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.requestTimeout())
 
 	type streamAttempt struct {
 		resp  *http.Response
@@ -424,10 +494,11 @@ func (s *Scheduler) weightedShuffle(keys []*data.UpstreamKey) {
 // checkCircuitBreaker 检查是否需要触发熔断。
 func (s *Scheduler) checkCircuitBreaker(ctx context.Context, key *data.UpstreamKey) {
 	consec := s.health.ConsecutiveFailures(key.ID)
-	if consec >= s.config.CircuitThreshold {
+	threshold, baseCooldown := s.circuitConfig()
+	if consec >= threshold {
 		// 计算冷却时长（指数退避）
-		cooldown := s.config.CircuitCooldown
-		for i := 1; i < consec-s.config.CircuitThreshold+1; i++ {
+		cooldown := baseCooldown
+		for i := 1; i < consec-threshold+1; i++ {
 			cooldown *= 2
 		}
 		// 上限 10 分钟

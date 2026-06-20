@@ -71,7 +71,7 @@ export default function Layout() {
     e.preventDefault()
     setPwErr('')
     if (pwForm.next.length < 6) { setPwErr('新令牌至少 6 个字符'); return }
-    if (pwForm.next === 'admin') { setPwErr('新令牌不能使用默认值 admin'); return }
+    if (pwForm.next.toUpperCase() === 'ADMIN') { setPwErr('新令牌不能使用初始默认值 ADMIN'); return }
     if (pwForm.next !== pwForm.confirm) { setPwErr('两次输入不一致'); return }
     setPwBusy(true)
     try {
@@ -93,7 +93,7 @@ export default function Layout() {
         <div className="px-3.5 py-3 flex items-center gap-2 font-extrabold text-[15px]">
           <span className="w-[22px] h-[22px] flex items-center justify-center bg-gradient-to-br from-nv-green to-nv-green-dim rounded-md text-black shadow-nv-glow">⬢</span>
           <span className="text-white">N-SLMCRS</span>
-          <span className="text-gray-600 text-[11px] font-normal px-1.5 py-0.5 rounded bg-white/[0.04] border border-white/[0.06]">v0.3</span>
+          <span className="text-gray-600 text-[11px] font-normal px-1.5 py-0.5 rounded bg-white/[0.04] border border-white/[0.06]">v0.4.0</span>
         </div>
         <nav className="mt-1">
           {NAV.map((sec) => (
@@ -151,7 +151,7 @@ export default function Layout() {
               <input
                 value={token}
                 onChange={(e) => { setTok(e.target.value); setLoginErr('') }}
-                placeholder="Admin Token（默认 admin）"
+                placeholder="Admin Token（默认 ADMIN）"
                 className="input w-44 h-7 py-1"
                 type="password"
               />
@@ -192,7 +192,7 @@ export default function Layout() {
                 <label className="text-[11px] text-gray-500">{t('common.new_password')}</label>
                 <input className="input mt-1" type="password" value={pwForm.next}
                   onChange={(e) => { setPwForm({ ...pwForm, next: e.target.value }); setPwErr('') }} required />
-                <div className="text-[10px] text-gray-600 mt-1">≥ 6 字符，且不能为 admin</div>
+                <div className="text-[10px] text-gray-600 mt-1">≥ 6 字符，且不能为 ADMIN</div>
               </div>
               <div>
                 <label className="text-[11px] text-gray-500">{t('common.confirm_password')}</label>
