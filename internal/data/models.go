@@ -8,18 +8,60 @@ import (
 )
 
 // Model 模型目录条目。
+//
+// 字段命名使用 snake_case（json tag），与前端约定一致。
 type Model struct {
-	ID             string
-	Object         string
-	Created        int64
-	OwnedBy        string
-	Root           string
-	ParamCount     string // 增强：参数量（如 8B），Phase 2 从模型卡补充
-	ContextLength  int    // 增强：上下文长度
-	Capability     string // 增强：chat|embedding|rerank|reasoning
-	Description    string
-	IsActive       bool
-	SyncedAt       int64
+	ID            string `json:"id"`
+	Object        string `json:"object"`
+	Created       int64  `json:"created"`
+	OwnedBy       string `json:"owned_by"`
+	Root          string `json:"root"`
+	ParamCount    string `json:"param_count"`
+	ContextLength int    `json:"context_length"`
+	Capability    string `json:"capability"`
+	Description   string `json:"description"`
+	IsActive      bool   `json:"is_active"`
+	SyncedAt      int64  `json:"synced_at"`
+}
+
+// ModelStats 单个模型在指定时间窗口内的请求统计。
+type ModelStats struct {
+	ModelID         string  `json:"model_id"`
+	TotalRequests   int64   `json:"total_requests"`
+	SuccessRequests int64   `json:"success_requests"`
+	SuccessRate     float64 `json:"success_rate"`
+	AvgLatencyMS    float64 `json:"avg_latency_ms"`
+}
+
+// GetModelStats 聚合每个模型近 window 内的请求统计。
+// 左连接保证目录里有但暂无请求的模型也返回（rate=0）。
+func (s *Store) GetModelStats(ctx context.Context, window time.Duration) ([]ModelStats, error) {
+	since := time.Now().Add(-window).Unix()
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.id,
+		       COUNT(r.id),
+		       COALESCE(SUM(CASE WHEN r.status='success' THEN 1 ELSE 0 END),0),
+		       COALESCE(AVG(r.latency_ms),0)
+		FROM models m
+		LEFT JOIN request_logs r ON r.model = m.id AND r.ts > ?
+		GROUP BY m.id
+		ORDER BY m.id`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ModelStats
+	for rows.Next() {
+		var ms ModelStats
+		if err := rows.Scan(&ms.ModelID, &ms.TotalRequests, &ms.SuccessRequests, &ms.AvgLatencyMS); err != nil {
+			return nil, err
+		}
+		if ms.TotalRequests > 0 {
+			ms.SuccessRate = 100.0 * float64(ms.SuccessRequests) / float64(ms.TotalRequests)
+		}
+		out = append(out, ms)
+	}
+	return out, rows.Err()
 }
 
 // UpsertModels 批量同步模型目录（来自 /v1/models）。

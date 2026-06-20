@@ -4,7 +4,7 @@ import {
   LineChart, Line, AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
-import { api, Metrics } from '../api'
+import { api, Metrics, KeyHealth } from '../api'
 import { PageHeader, KpiCard, Spinner, EmptyState, StatusBadge } from '../components/ui'
 
 const WINDOWS = [
@@ -19,7 +19,7 @@ export default function Operations() {
   const [win, setWin] = useState('1h')
   const [m, setM] = useState<Metrics | null>(null)
   const [ts, setTs] = useState<any[]>([])
-  const [health, setHealth] = useState<any[]>([])
+  const [health, setHealth] = useState<KeyHealth[]>([])
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
@@ -186,33 +186,40 @@ export default function Operations() {
                 </tr>
               </thead>
               <tbody>
-                {health.map((h: any, i: number) => (
+                {health.map((h, i) => {
+                  // 防御性 fallback：后端可能返回 0 数据（无请求）
+                  const rate = h.success_rate ?? 0
+                  const ewma = h.ewma_rate ?? rate
+                  const total = h.total_requests ?? 0
+                  const consFail = h.consecutive_fail ?? 0
+                  return (
                   <tr key={i} className="border-b border-white/[0.03] hover:bg-white/[0.015]">
                     <td className="px-3 py-2.5 font-mono text-[11.5px] text-gray-300">{h.key_mask}</td>
                     <td className="px-3 py-2.5"><StatusBadge status={h.status} /></td>
-                    <td className="px-3 py-2.5 text-right text-gray-300">{h.total_requests}</td>
+                    <td className="px-3 py-2.5 text-right text-gray-300">{total}</td>
                     <td className="px-3 py-2.5 text-right">
-                      <span className={h.success_rate >= 95 ? 'text-nv-green' : h.success_rate >= 80 ? 'text-amber-400' : 'text-red-400'}>
-                        {h.success_rate.toFixed(1)}%
+                      <span className={rate >= 95 ? 'text-nv-green' : rate >= 80 ? 'text-amber-400' : total === 0 ? 'text-gray-600' : 'text-red-400'}>
+                        {rate.toFixed(1)}%
                       </span>
                     </td>
                     <td className="px-3 py-2.5 text-right text-gray-400">{h.avg_latency_ms?.toFixed(0) || 0}ms</td>
                     <td className="px-3 py-2.5 text-right">
-                      <span className={h.consecutive_fail > 0 ? 'text-red-400' : 'text-gray-600'}>{h.consecutive_fail}</span>
+                      <span className={consFail > 0 ? 'text-red-400' : 'text-gray-600'}>{consFail}</span>
                     </td>
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-2">
                         <div className="w-20 h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
                           <div className="h-full rounded-full" style={{
-                            width: `${h.success_rate}%`,
-                            background: h.success_rate >= 95 ? '#76b900' : h.success_rate >= 80 ? '#f5c542' : '#f06060',
+                            width: `${rate}%`,
+                            background: rate >= 95 ? '#76b900' : rate >= 80 ? '#f5c542' : '#f06060',
                           }} />
                         </div>
-                        <span className="text-[11px] text-gray-600">{h.ewma_rate?.toFixed(0) || 0}%</span>
+                        <span className="text-[11px] text-gray-600">{ewma.toFixed(0)}%</span>
                       </div>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>

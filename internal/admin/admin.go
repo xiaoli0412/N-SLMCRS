@@ -17,6 +17,7 @@
 //   GET    /api/admin/timeseries         时序曲线（?window=1h&bucket=60）
 //   GET    /api/admin/key-health         每 Key 健康
 //   GET    /api/admin/models             模型目录（含失效）
+//   GET    /api/admin/model-stats        每个模型的成功率统计（?window=1h）
 //   POST   /api/admin/models/sync        立即同步模型
 //   GET    /api/admin/logs               查询日志
 // Phase 3 端点（Auto-Pilot）：
@@ -159,6 +160,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		g.GET("/key-health", h.getKeyHealth)
 
 		g.GET("/models", h.listModels)
+		g.GET("/model-stats", h.getModelStats)
 		g.POST("/models/sync", h.syncModels)
 
 		g.GET("/logs", h.getLogs)
@@ -505,6 +507,16 @@ func (h *Handler) getKeyHealth(c *gin.Context) {
 }
 
 // --- 模型 ---
+
+func (h *Handler) getModelStats(c *gin.Context) {
+	window := parseWindow(c.Query("window"))
+	ms, err := h.store.GetModelStats(c.Request.Context(), window)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": ms})
+}
 
 func (h *Handler) listModels(c *gin.Context) {
 	ms, err := h.store.ListAllModels(c.Request.Context())

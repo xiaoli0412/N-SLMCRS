@@ -71,6 +71,43 @@ export interface Metrics {
   PeakRPM: number
 }
 
+// KeyHealth 与后端 KeyHealthEntry 对应（snake_case + json tag）。
+export interface KeyHealth {
+  key_mask: string
+  status: string
+  success_rate: number
+  avg_latency_ms: number
+  total_requests: number
+  consecutive_fail: number
+  ewma_rate: number
+  last_success_at: number
+  last_error_at: number
+}
+
+// ModelStats 与后端 ModelStats 对应。
+export interface ModelStats {
+  model_id: string
+  total_requests: number
+  success_requests: number
+  success_rate: number
+  avg_latency_ms: number
+}
+
+// Model 与后端 Model 对应（snake_case + json tag）。
+export interface Model {
+  id: string
+  object: string
+  created: number
+  owned_by: string
+  root: string
+  param_count: string
+  context_length: number
+  capability: string
+  description: string
+  is_active: boolean
+  synced_at: number
+}
+
 // --- Auto-Pilot ---
 
 export type AutoPilotMode = 'manual' | 'assisted' | 'fullauto'
@@ -159,9 +196,11 @@ export const api = {
   getTimeSeries: (window = '1h', bucket = 60) =>
     request<{ data: any[] }>(`/api/admin/timeseries?window=${window}&bucket=${bucket}`),
   getKeyHealth: (window = '1h') =>
-    request<{ data: any[] }>(`/api/admin/key-health?window=${window}`),
+    request<{ data: KeyHealth[] }>(`/api/admin/key-health?window=${window}`),
+  getModelStats: (window = '1h') =>
+    request<{ data: ModelStats[] }>(`/api/admin/model-stats?window=${window}`),
   // 模型
-  listModels: () => request<{ data: any[] }>('/api/admin/models'),
+  listModels: () => request<{ data: Model[] }>('/api/admin/models'),
   syncModels: () => request('/api/admin/models/sync', { method: 'POST' }),
   // 日志
   getLogs: (params: string) => request<{ data: any[] }>(`/api/admin/logs${params}`),
