@@ -1,8 +1,13 @@
 package scheduler
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/nslmcrs/gateway/internal/data"
+	"github.com/nslmcrs/gateway/internal/ratelimit"
 )
 
 // fakeRuntime 测试用 RuntimeOverrides 桩。
@@ -51,5 +56,128 @@ func TestEffectiveConcurrency_Precedence(t *testing.T) {
 	s.runtime = fakeRuntime{conc: 0}
 	if got := s.effectiveConcurrency(); got != 5 {
 		t.Fatalf("Runtime<=0 应回退配置默认 5，得到 %d", got)
+	}
+}
+
+// newTestScheduler 构造带临时 SQLite 的调度器（client=nil，selectKeys/markHealthy 不依赖上游）。
+func newTestScheduler(t *testing.T) (*Scheduler, *data.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := data.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	health := ratelimit.NewHealthTracker(2 * time.Minute)
+	rl := ratelimit.NewManager(40)
+	s := New(store, nil, rl, health, SchedulerConfig{
+		DefaultConcurrency: 5,
+		MaxConcurrency:     10,
+		RequestTimeout:     180 * time.Second,
+		CircuitThreshold:   5,
+		CircuitCooldown:    30 * time.Second,
+		HealthWindow:       2 * time.Minute,
+	})
+	return s, store
+}
+
+// addKey 添加一个密钥并注册到限流器，返回其 ID。
+func addKey(t *testing.T, s *Scheduler, store *data.Store, kv string) int64 {
+	t.Helper()
+	k, err := store.AddUpstreamKey(context.Background(), kv, "t", "e", 40)
+	if err != nil {
+		t.Fatalf("AddUpstreamKey: %v", err)
+	}
+	s.rl.Register(k.ID, 0)
+	return k.ID
+}
+
+// TestSelectKeys_HalfOpenPromotion 熔断冷却到期 → 转半开放行，且重置旧连续失败计数。
+// 回归旧实现缺陷：circuit_open 一旦设置便永久跳过，CoolingUntil/退避形同虚设。
+func TestSelectKeys_HalfOpenPromotion(t *testing.T) {
+	s, store := newTestScheduler(t)
+	ctx := context.Background()
+	id := addKey(t, s, store, "nvapi-half1")
+	store.UpdateUpstreamKeyStatus(ctx, id, "circuit_open", 5, time.Now().Unix()-1) // 冷却到期
+	for i := 0; i < 5; i++ {
+		s.health.Record(id, false, 2*time.Minute) // 旧连续失败 5
+	}
+	if c := s.health.ConsecutiveFailures(id); c != 5 {
+		t.Fatalf("预设 consec=5, 得到 %d", c)
+	}
+
+	cands, err := s.selectKeys(ctx, "meta/x")
+	if err != nil {
+		t.Fatalf("selectKeys: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("应放行 1 个半开试探, 得到 %d 候选", len(cands))
+	}
+	if cands[0].Status != "half_open" {
+		t.Fatalf("候选应为 half_open, 得到 %s", cands[0].Status)
+	}
+	if c := s.health.ConsecutiveFailures(id); c != 0 {
+		t.Fatalf("半开应重置 consec=0（干净试探起点）, 得到 %d", c)
+	}
+	dbk, _ := store.GetUpstreamKey(ctx, id)
+	if dbk.Status != "half_open" {
+		t.Fatalf("DB 状态应为 half_open, 得到 %s", dbk.Status)
+	}
+}
+
+// TestSelectKeys_CircuitOpenStillCooling 冷却未到期应继续跳过，不转半开。
+func TestSelectKeys_CircuitOpenStillCooling(t *testing.T) {
+	s, store := newTestScheduler(t)
+	ctx := context.Background()
+	id := addKey(t, s, store, "nvapi-cool")
+	store.UpdateUpstreamKeyStatus(ctx, id, "circuit_open", 5, time.Now().Unix()+60) // 仍在冷却
+
+	cands, err := s.selectKeys(ctx, "meta/x")
+	if err != nil {
+		t.Fatalf("selectKeys: %v", err)
+	}
+	if len(cands) != 0 {
+		t.Fatalf("冷却中应不放行, 得到 %d 候选", len(cands))
+	}
+	dbk, _ := store.GetUpstreamKey(ctx, id)
+	if dbk.Status != "circuit_open" {
+		t.Fatalf("冷却中应保持 circuit_open, 得到 %s", dbk.Status)
+	}
+}
+
+// TestSelectKeys_OnlyOneHalfOpenTrial 多个冷却到期的密钥每轮只放行 1 个半开试探。
+func TestSelectKeys_OnlyOneHalfOpenTrial(t *testing.T) {
+	s, store := newTestScheduler(t)
+	ctx := context.Background()
+	id1 := addKey(t, s, store, "nvapi-ho1")
+	id2 := addKey(t, s, store, "nvapi-ho2")
+	past := time.Now().Unix() - 1
+	store.UpdateUpstreamKeyStatus(ctx, id1, "circuit_open", 5, past)
+	store.UpdateUpstreamKeyStatus(ctx, id2, "circuit_open", 5, past)
+
+	cands, err := s.selectKeys(ctx, "meta/x")
+	if err != nil {
+		t.Fatalf("selectKeys: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("应只放行 1 个半开试探, 得到 %d 候选", len(cands))
+	}
+}
+
+// TestMarkHealthy_HalfOpenToActive 半开试探成功 → 闭合为 active。
+func TestMarkHealthy_HalfOpenToActive(t *testing.T) {
+	s, store := newTestScheduler(t)
+	ctx := context.Background()
+	id := addKey(t, s, store, "nvapi-mh")
+	store.UpdateUpstreamKeyStatus(ctx, id, "half_open", 0, 0)
+	key, _ := store.GetUpstreamKey(ctx, id) // Status=half_open
+
+	s.markHealthy(ctx, key)
+	if key.Status != "active" {
+		t.Fatalf("markHealthy 后应 active, 得到 %s", key.Status)
+	}
+	dbk, _ := store.GetUpstreamKey(ctx, id)
+	if dbk.Status != "active" {
+		t.Fatalf("DB 应 active, 得到 %s", dbk.Status)
 	}
 }

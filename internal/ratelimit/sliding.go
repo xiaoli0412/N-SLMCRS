@@ -127,3 +127,12 @@ func (h *HealthTracker) ConsecutiveFailures(keyID int64) int {
 	defer h.mu.Unlock()
 	return h.consecutiveFail[keyID]
 }
+
+// ResetConsecutive 清除某 Key 的连续失败计数。
+// 半开探测启用时调用：给试探请求一个干净起点，否则 checkCircuitBreaker
+// 会凭熔断前的旧失败数立即重新熔断，试探永远无法成功闭合。
+func (h *HealthTracker) ResetConsecutive(keyID int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.consecutiveFail[keyID] = 0
+}

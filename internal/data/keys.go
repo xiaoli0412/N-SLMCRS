@@ -17,7 +17,7 @@ type UpstreamKey struct {
 	Email           string
 	RPMOverride     int  // 0=用默认
 	Enabled         bool
-	Status          string // active|cooling|circuit_open|disabled
+	Status          string // active|half_open|circuit_open|disabled（half_open=熔断冷却到期的试探态）
 	ConsecutiveFail int
 	CoolingUntil    int64
 	CreatedAt       int64

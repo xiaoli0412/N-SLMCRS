@@ -381,6 +381,7 @@ func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, r
 		key := keys[firstConnected.index]
 		// 其余连接会被 context cancel 自动清理
 		latency := int(time.Since(start).Milliseconds())
+		s.markHealthy(ctx, key)
 		s.recordResult(ctx, traceID, model, key, key.KeyMask, "success", 200, "", n)
 		return &ScheduleResult{
 			StatusCode:   200,
@@ -398,6 +399,11 @@ func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, r
 }
 
 // selectKeys 从 Store 获取可用 Key，过滤熔断/冷却/无余量的，按健康分加权随机排序。
+//
+// 熔断半开探测：circuit_open 且冷却到期（CoolingUntil<=now）的 Key 转为 half_open
+// 重新放行——每轮仅放行 1 个半开试探，避免同时试探多个待恢复密钥；试探成功(recordSuccess)
+// 闭合为 active，失败则由 checkCircuitBreaker 重新熔断。旧实现一旦 circuit_open 便永久跳过，
+// CoolingUntil/指数退避形同虚设——此处补齐自动恢复。
 func (s *Scheduler) selectKeys(ctx context.Context, model string) ([]*data.UpstreamKey, error) {
 	allKeys, err := s.store.ListUpstreamKeys(ctx)
 	if err != nil {
@@ -406,18 +412,28 @@ func (s *Scheduler) selectKeys(ctx context.Context, model string) ([]*data.Upstr
 
 	now := time.Now().Unix()
 	var candidates []*data.UpstreamKey
+	halfOpenAllowed := 1 // 每轮只放行 1 个半开试探
 	for i := range allKeys {
 		k := &allKeys[i]
 		if !k.Enabled {
 			continue
 		}
-		// 冷却中检查
-		if k.CoolingUntil > now {
-			continue
-		}
-		// 熔断状态检查
 		if k.Status == "circuit_open" {
-			continue
+			if k.CoolingUntil > now {
+				continue // 仍在熔断冷却期
+			}
+			// 冷却到期 → 转半开，放行一个试探请求
+			k.Status = "half_open"
+			k.ConsecutiveFail = 0
+			k.CoolingUntil = 0
+			_ = s.store.UpdateUpstreamKeyStatus(ctx, k.ID, "half_open", 0, 0)
+			s.health.ResetConsecutive(k.ID) // 清旧失败数，给试探干净起点
+		}
+		if k.Status == "half_open" {
+			if halfOpenAllowed <= 0 {
+				continue // 本轮已有半开试探，其余半开暂不放行
+			}
+			halfOpenAllowed--
 		}
 		// 限流余量检查
 		if !s.rl.Allow(k.ID, 1) {
@@ -510,11 +526,22 @@ func (s *Scheduler) checkCircuitBreaker(ctx context.Context, key *data.UpstreamK
 	}
 }
 
+// markHealthy 记录一次成功并闭合半开熔断（流式/非流式共用）。
+// 旧实现在流式成功路径未调用 health.Record(true)，导致流式成功不改善健康度——一并修正。
+func (s *Scheduler) markHealthy(ctx context.Context, key *data.UpstreamKey) {
+	s.health.Record(key.ID, true, s.config.HealthWindow)
+	// 半开试探成功 → 熔断闭合，转回 active
+	if key.Status == "half_open" {
+		key.Status = "active"
+		_ = s.store.UpdateUpstreamKeyStatus(ctx, key.ID, "active", 0, 0)
+	}
+}
+
 // recordSuccess 记录成功请求。
 func (s *Scheduler) recordSuccess(ctx context.Context, traceID, model string, key *data.UpstreamKey, resp *upstream.Response, concurrency int, start time.Time) {
 	latency := int(time.Since(start).Milliseconds())
 	tokens := extractTokens(resp.Body)
-	s.health.Record(key.ID, true, s.config.HealthWindow)
+	s.markHealthy(ctx, key)
 	s.store.RecordRequest(ctx, data.RequestLog{
 		TraceID:          traceID,
 		DownstreamCred:   "",
