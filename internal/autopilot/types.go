@@ -18,6 +18,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/nslmcrs/gateway/internal/agent"
 	"github.com/nslmcrs/gateway/internal/data"
 )
 
@@ -112,6 +113,12 @@ type State struct {
 	Interventions   int           `json:"Interventions"`   // 累计执行动作数
 	PendingCount    int           `json:"PendingCount"`    // assisted 待审建议数
 	RecentEvents    []EventRecord `json:"RecentEvents"`
+	// LLMBackendMode LLM 引擎后端模式：stub（确定性降级）/ gateway（真 LLM 调用）。
+	// 让前端明确分辨"AI 真在工作"还是 stub 回退。
+	LLMBackendMode string `json:"LLMBackendMode"`
+	// RecentTrace LLM 引擎最近一次决策的 ReAct 推理轨迹（think/act/observe 链），调试用。
+	// 非 LLM 引擎或无轨迹时为空。
+	RecentTrace []agent.StepTrace `json:"RecentTrace,omitempty"`
 }
 
 // Sanitize 返回快照中某密钥的剩余 RPM 估值（未知返回 -1）。

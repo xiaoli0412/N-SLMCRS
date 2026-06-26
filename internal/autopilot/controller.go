@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nslmcrs/gateway/internal/agent"
 	"github.com/nslmcrs/gateway/internal/data"
 	"github.com/nslmcrs/gateway/internal/ratelimit"
 )
@@ -41,6 +42,10 @@ type Controller struct {
 	// llmBackendMode LLM 引擎后端模式：stub（确定性模板）/ gateway（真 LLM）。
 	// 供启动日志与前端可观测（避免误以为"AI 在工作"而实为 stub）。
 	llmBackendMode string
+
+	// lastTrace LLM 引擎最近一次决策的推理轨迹（think/act/observe 链），供 State.RecentTrace。
+	// 非 LLM 引擎时为空。
+	lastTrace []agent.StepTrace
 }
 
 // LLMConfig LLM 引擎后端配置（来自 config.AutoPilotConfig）。三者任一为空→stub。
@@ -62,7 +67,7 @@ func (c LLMConfig) configured() bool {
 func NewController(store *data.Store, health *ratelimit.HealthTracker, rl *ratelimit.Manager,
 	rt *Runtime, healthWindow time.Duration, defaultConcurrency, maxConcurrency int, llm LLMConfig) *Controller {
 	exec := NewExecutor(store, rt)
-	backend := newGatewayBackend(llm.BaseURL, llm.APIKey, llm.Model)
+	backend := agent.NewHTTPBackend(llm.BaseURL, llm.APIKey, llm.Model)
 	engines := map[EngineID]Engine{
 		EngineAdaptive: NewAdaptiveEngine(),
 		EngineForecast: NewForecastEngine(),
@@ -139,6 +144,12 @@ func (c *Controller) tick(ctx context.Context) {
 		log.Printf("[autopilot] %s 决策失败: %v", engine.ID(), err)
 		return
 	}
+	// LLM 引擎产出推理轨迹，捕获供 State.RecentTrace（前端"推理链"调试用）
+	if tr, ok := engine.(interface{ LastTrace() []agent.StepTrace }); ok {
+		c.mu.Lock()
+		c.lastTrace = tr.LastTrace()
+		c.mu.Unlock()
+	}
 	applied := c.exec.Apply(ctx, mode, actions)
 	if applied > 0 {
 		c.exec.AddIntervention(applied)
@@ -199,6 +210,7 @@ func (c *Controller) State(ctx context.Context) State {
 	c.mu.RLock()
 	mode := c.mode
 	engine := c.activeEngine.ID()
+	trace := c.lastTrace
 	c.mu.RUnlock()
 
 	dpm, interventions, events := c.exec.Stats()
@@ -216,6 +228,8 @@ func (c *Controller) State(ctx context.Context) State {
 		Interventions:      interventions,
 		PendingCount:       pending,
 		RecentEvents:       events,
+		LLMBackendMode:     c.llmBackendMode,
+		RecentTrace:        trace,
 	}
 	return rt
 }

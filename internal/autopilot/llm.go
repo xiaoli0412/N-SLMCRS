@@ -2,69 +2,82 @@ package autopilot
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+
+	"github.com/nslmcrs/gateway/internal/agent"
 )
 
-// LLMEngine 用大模型做可解释的复杂决策。
+// LLMEngine 用大模型做可解释的复杂决策（agent 化）。
 //
-// 设计：prompt 构造 + JSON 解析齐全；上游 LLMBackend 可切换。
-// - stubBackend：返回模板 JSON（确定性策略），保证 stub 也能产出可执行 Action。
-// - gatewayBackend：调自身网关 /v1/chat/completions（环境变量 LLM_BASE_URL/LLM_API_KEY/LLM_MODEL 齐全时启用）。
-// 配置缺失时用 stub；齐全则接真实 LLM 网关调用。
+// 真后端（agent.LLMBackend 非 nil）：跑 ReAct 循环——LLM 在工具调用中
+// 思考(think)→调用调度工具(act)→读取观测(observe)→继续或收手，
+// 全程产出可调试的 StepTrace（供前端"推理链"展示）。
+//
+// 无后端（nil）：回退确定性 stubDecide（仍可产出动作，但非真 LLM），
+// 并在 State.LLMBackendMode 标注 "stub"，避免误以为"AI 在工作"而实为 stub。
+//
+// 工具不直接执行——仅记录 Action 并返回当前观测；执行由 Executor.Apply 按模式统一处理，
+// 使 LLM 引擎与其余引擎（adaptive/forecast）走同一执行路径，manual/assisted/fullauto 语义一致。
 type LLMEngine struct {
-	backend LLMBackend
+	backend agent.LLMBackend // nil → stub 降级
+
+	mu        sync.Mutex
+	lastTrace []agent.StepTrace
 }
 
-// LLMBackend LLM 调用抽象。
-type LLMBackend interface {
-	Generate(ctx context.Context, prompt string) (string, error)
-}
-
-// stubBackend 返回确定性模板策略（复用简单规则），不依赖任何密钥。
-type stubBackend struct{}
-
-// NewLLMEngine 创建 LLM 引擎。backend 为 nil 时用 stubBackend。
-func NewLLMEngine(backend LLMBackend) *LLMEngine {
-	if backend == nil {
-		backend = &stubBackend{}
-	}
+// NewLLMEngine 创建 LLM 引擎。backend 为 nil 时走 stub 降级。
+func NewLLMEngine(backend agent.LLMBackend) *LLMEngine {
 	return &LLMEngine{backend: backend}
 }
 
 // ID 引擎标识。
 func (e *LLMEngine) ID() EngineID { return EngineLLM }
 
-// Generate stub 实现：不接收 prompt，返回确定性的模板决策。
-func (s *stubBackend) Generate(_ context.Context, _ string) (string, error) {
-	return "", nil // 实际策略在 Decide 内直接构造，绕过 JSON 往返
+// LastTrace 返回最近一次决策的推理轨迹（供 Controller 填入 State.RecentTrace）。
+func (e *LLMEngine) LastTrace() []agent.StepTrace {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.lastTrace
+}
+
+// BackendMode 返回后端模式：stub|gateway（供可观测）。
+func (e *LLMEngine) BackendMode() string {
+	if e.backend == nil {
+		return "stub"
+	}
+	return e.backend.Mode()
 }
 
 // Decide 依据快照决策。
 func (e *LLMEngine) Decide(ctx context.Context, snap Snapshot) ([]Action, error) {
-	prompt := buildPrompt(snap)
-
-	var actions []Action
-	if sb, ok := e.backend.(*stubBackend); ok && sb != nil {
-		// stub：直接用确定性规则（复用 adaptive 思路的精简版），保证可执行
-		actions = e.stubDecide(snap)
-		_ = prompt // stub 不消费 prompt，但保留构造（审计/未来真实 LLM 用）
-	} else {
-		// 真实 LLM：调后端 → 解析 JSON
-		out, err := e.backend.Generate(ctx, prompt)
-		if err != nil {
-			return nil, fmt.Errorf("LLM 调用失败: %w", err)
-		}
-		actions, err = parseLLMActions(out, snap)
-		if err != nil {
-			return nil, fmt.Errorf("解析 LLM 输出: %w", err)
-		}
+	if e.backend == nil {
+		// stub：无 LLM 可调，回退确定性规则（与 adaptive 思路一致的精简版）
+		acts := e.stubDecide(snap)
+		e.mu.Lock()
+		e.lastTrace = []agent.StepTrace{{
+			Step: 1, Role: "think",
+			Content: "LLM(stub)：未配置真 LLM 后端，回退确定性规则降级输出",
+		}}
+		e.mu.Unlock()
+		return acts, nil
 	}
-	return actions, nil
+
+	// 真 LLM：ReAct agent 循环
+	registry, out := newLLMTools(snap)
+	ag := agent.NewAgent(e.backend, registry, 6)
+	res, err := ag.Run(ctx, buildSystemPrompt(snap), buildUserInput(snap))
+	e.mu.Lock()
+	e.lastTrace = res.Steps
+	e.mu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("agent 循环失败: %w", err)
+	}
+	return *out, nil
 }
 
-// stubDecide 确定性的模板决策（与 adaptive 精简版一致，但带 LLM 风格的根因）。
+// stubDecide 确定性的模板决策（无 LLM 时的降级，与 adaptive 精简版一致，但带 LLM 风格的根因）。
 func (e *LLMEngine) stubDecide(snap Snapshot) []Action {
 	actions := make([]Action, 0, len(snap.Keys)+1)
 
@@ -104,61 +117,24 @@ func (e *LLMEngine) stubDecide(snap Snapshot) []Action {
 	return actions
 }
 
-// buildPrompt 构造给真实 LLM 的提示词。
-func buildPrompt(snap Snapshot) string {
+// buildSystemPrompt 构造系统提示（角色 + 工具 + 原则）。
+func buildSystemPrompt(_ Snapshot) string {
+	return "你是 N-SLMCRS 网关的智能调度 agent。基于现状用工具给出调度决策。\n" +
+		"可用工具：set_concurrency / set_weight_boost / disable_key / open_circuit / revoke_credential。\n" +
+		"每次调用工具会返回当前观测；可多步推理后收手（不再调用工具即结束）。\n" +
+		"原则：成功率偏低先 back-off（降并发）；故障 Key 降权或隔离；保守、可解释、不误动。"
+}
+
+// buildUserInput 构造用户输入（当前现状快照）。
+func buildUserInput(snap Snapshot) string {
 	var sb strings.Builder
-	sb.WriteString("你是 N-SLMCRS 网关的智能调度器。基于以下现状给出调度决策。\n")
-	sb.WriteString(fmt.Sprintf("- 当前并发度: %d (默认%d/上限%d)\n", snap.CurrentConcurrency, snap.DefaultConcurrency, snap.MaxConcurrency))
-	sb.WriteString(fmt.Sprintf("- 全局成功率(1h): %.1f%%, 当前RPM: %d\n", snap.Metrics.SuccessRate, snap.Metrics.CurrentRPM))
-	sb.WriteString("- 密钥列表:\n")
+	sb.WriteString(fmt.Sprintf("当前并发度: %d (默认%d/上限%d)\n", snap.CurrentConcurrency, snap.DefaultConcurrency, snap.MaxConcurrency))
+	sb.WriteString(fmt.Sprintf("全局成功率(1h): %.1f%%, 当前RPM: %d\n", snap.Metrics.SuccessRate, snap.Metrics.CurrentRPM))
+	sb.WriteString("密钥列表:\n")
 	for _, k := range snap.Keys {
 		sb.WriteString(fmt.Sprintf("  - id=%d %s enabled=%v status=%s successRate=%.1f%% consecFail=%d\n",
 			k.ID, k.Mask, k.Enabled, k.Status, k.SuccessRate*100, k.ConsecFail))
 	}
-	sb.WriteString("\n可选动作: set_concurrency(目标并发度) | set_weight_boost(keyID, 0-1降权) | disable_key(keyID) | open_circuit(keyID, 冷却秒数) | revoke_credential(credID)\n")
-	sb.WriteString("输出纯 JSON，格式: {\"actions\":[{\"kind\":\"set_concurrency\",\"value\":3,\"reason\":\"...\",\"confidence\":0.8}],\"rationale\":\"总体说明\"}\n")
+	sb.WriteString("\n请给出调度决策。")
 	return sb.String()
-}
-
-// llmAction 单条 LLM 返回的动作（带 omitempty，便于解析）。
-type llmAction struct {
-	Kind       string  `json:"kind"`
-	KeyID      int64   `json:"key_id,omitempty"`
-	CredID     int64   `json:"cred_id,omitempty"`
-	Value      float64 `json:"value,omitempty"`
-	Reason     string  `json:"reason,omitempty"`
-	Confidence float64 `json:"confidence,omitempty"`
-}
-
-type llmResponse struct {
-	Actions   []llmAction `json:"actions"`
-	Rationale string      `json:"rationale"`
-}
-
-// parseLLMActions 解析 LLM 返回的 JSON 为动作列表。
-func parseLLMActions(raw string, _ Snapshot) ([]Action, error) {
-	// 兼容模型把 JSON 包在 ```json ... ``` 中
-	raw = strings.TrimSpace(raw)
-	raw = strings.TrimPrefix(raw, "```json")
-	raw = strings.TrimPrefix(raw, "```")
-	raw = strings.TrimSuffix(raw, "```")
-	raw = strings.TrimSpace(raw)
-
-	var resp llmResponse
-	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
-		return nil, fmt.Errorf("非法 JSON: %w", err)
-	}
-	out := make([]Action, 0, len(resp.Actions))
-	for _, a := range resp.Actions {
-		out = append(out, Action{
-			Kind:       ActionKind(a.Kind),
-			KeyID:      a.KeyID,
-			CredID:     a.CredID,
-			Value:      a.Value,
-			Reason:     a.Reason,
-			Confidence: clamp01(a.Confidence),
-			Source:     EngineLLM,
-		})
-	}
-	return out, nil
 }
