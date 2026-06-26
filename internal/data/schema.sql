@@ -47,6 +47,17 @@ CREATE TABLE IF NOT EXISTS models (
     synced_at       INTEGER NOT NULL                  -- 最后同步时间
 );
 
+-- 模型主动探活结果（每模型最近一次 ping 测试，供模型广场可用度展示）
+CREATE TABLE IF NOT EXISTS model_probes (
+    model          TEXT PRIMARY KEY,                  -- 模型 id
+    ts             INTEGER NOT NULL,                  -- 探活时间戳（秒）
+    ok             INTEGER NOT NULL,                  -- 0=失败 1=成功
+    http_status    INTEGER DEFAULT 0,                 -- 上游返回的 HTTP 状态码
+    latency_ms     INTEGER DEFAULT 0,                 -- 探活端到端延迟
+    status         TEXT    DEFAULT '',                -- ok|error|timeout
+    error          TEXT    DEFAULT ''                 -- 错误简述
+);
+
 -- 请求记录（时序指标来源）— 按时间查询为主，建索引
 CREATE TABLE IF NOT EXISTS request_logs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

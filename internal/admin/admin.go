@@ -17,8 +17,10 @@
 //   GET    /api/admin/timeseries         时序曲线（?window=1h&bucket=60）
 //   GET    /api/admin/key-health         每 Key 健康
 //   GET    /api/admin/models             模型目录（含失效）
-//   GET    /api/admin/models/plaza        模型广场视图（capability 过滤 + 用量统计）
+//   GET    /api/admin/models/plaza        模型广场视图（capability 过滤 + 用量统计 + 可用度）
 //   POST   /api/admin/models/sync         立即同步模型
+//   POST   /api/admin/models/test         探活单个模型（可用度测试）
+//   POST   /api/admin/models/probe-all     探活所有 chat 模型
 //   GET    /api/admin/settings            读取熔断/调度运行时配置
 //   PUT    /api/admin/settings            更新熔断/调度运行时配置（落库 + 热生效）
 //   GET    /api/admin/logs               查询日志
@@ -59,6 +61,7 @@ const settingKeyTokenHash = "admin:token_hash"
 type Handler struct {
 	store  *data.Store
 	syncer *modelmeta.Syncer
+	prober *modelmeta.Prober // 模型探活器（可选；main.go 装配后注入）
 	cfg    *config.Config
 	ap     *autopilot.Controller // Auto-Pilot 总控（可选；main.go 装配后注入）
 	sched  *scheduler.Scheduler  // 调度器（可选；用于运行时改熔断/并发配置）
@@ -72,6 +75,12 @@ func New(store *data.Store, syncer *modelmeta.Syncer, cfg *config.Config) *Handl
 // SetScheduler 注入调度器（启用 /api/admin/settings 运行时配置读写）。
 func (h *Handler) SetScheduler(s *scheduler.Scheduler) *Handler {
 	h.sched = s
+	return h
+}
+
+// SetProber 注入模型探活器（启用 /api/admin/models/test 与 /models/probe-all）。
+func (h *Handler) SetProber(p *modelmeta.Prober) *Handler {
+	h.prober = p
 	return h
 }
 
@@ -182,6 +191,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		g.GET("/models", h.listModels)
 		g.GET("/models/plaza", h.listModelsPlaza)
 		g.POST("/models/sync", h.syncModels)
+		g.POST("/models/test", h.testModel)
+		g.POST("/models/probe-all", h.probeAllModels)
 
 		g.GET("/settings", h.getSettings)
 		g.PUT("/settings", h.putSettings)
@@ -546,22 +557,40 @@ type modelView struct {
 	Description   string  `json:"description"`
 	IsActive      bool    `json:"is_active"`
 	SyncedAt      int64   `json:"synced_at"`
-	// 用量统计（近 1h）
+	// 用量统计（近 1h，被动流量聚合）
 	RequestCount int64   `json:"request_count"`
 	SuccessRate  float64 `json:"success_rate"` // 0..100
+	// 可用度（被动聚合 + 主动探活，仿 new-api）
+	AvailabilityScore float64 `json:"availability_score"` // 0..100 综合评分
+	AvgLatencyMS      int64   `json:"avg_latency_ms"`
+	ErrorCount        int64   `json:"error_count"`
+	LastProbeTS       int64   `json:"last_probe_ts"`
+	ProbeOK           bool    `json:"probe_ok"`
+	ProbeStatus       string  `json:"probe_status"` // ok|error|timeout
+	ProbeLatencyMS    int     `json:"probe_latency_ms"`
 }
 
-// toModelViews 将 data.Model 列表拼装为带用量统计的广场视图。
+// toModelViews 将 data.Model 列表拼装为带用量统计与探活结果的广场视图。
 func (h *Handler) toModelViews(ctx context.Context, ms []data.Model) []modelView {
-	usage, _ := h.store.ModelUsageStats(ctx, time.Hour)
+	health, _ := h.store.ModelHealthStats(ctx, time.Hour)
+	probes, _ := h.store.ListModelProbes(ctx)
 	views := make([]modelView, 0, len(ms))
 	for _, m := range ms {
-		u := usage[m.ID]
+		u := health[m.ID]
+		pr := probes[m.ID]
 		views = append(views, modelView{
 			ID: m.ID, Object: m.Object, Created: m.Created, OwnedBy: m.OwnedBy, Root: m.Root,
 			Capability: m.Capability, ParamCount: m.ParamCount, ContextLength: m.ContextLength,
 			Description: m.Description, IsActive: m.IsActive, SyncedAt: m.SyncedAt,
-			RequestCount: u.RequestCount, SuccessRate: u.SuccessRate,
+			RequestCount:      u.RequestCount,
+			SuccessRate:       u.SuccessRate,
+			AvailabilityScore: u.AvailabilityScore,
+			AvgLatencyMS:      u.AvgLatencyMS,
+			ErrorCount:        u.ErrorCount,
+			LastProbeTS:       pr.TS,
+			ProbeOK:           pr.OK,
+			ProbeStatus:       pr.Status,
+			ProbeLatencyMS:    pr.LatencyMS,
 		})
 	}
 	return views
@@ -626,6 +655,46 @@ func (h *Handler) listModelsPlaza(c *gin.Context) {
 func (h *Handler) syncModels(c *gin.Context) {
 	if err := h.syncer.SyncOnce(c.Request.Context()); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// testModel 探活单个模型（仿 new-api 的"测试"按钮）。
+// POST /api/admin/models/test  body: {"model":"meta/..."} 或 ?model=meta/...
+func (h *Handler) testModel(c *gin.Context) {
+	if h.prober == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "探活器未启用"})
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = strings.TrimSpace(c.Query("model"))
+	}
+	if model == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 model 参数"})
+		return
+	}
+	res, err := h.prober.Probe(c.Request.Context(), model)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+// probeAllModels 探活所有 chat 模型。POST /api/admin/models/probe-all
+func (h *Handler) probeAllModels(c *gin.Context) {
+	if h.prober == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "探活器未启用"})
+		return
+	}
+	if err := h.prober.ProbeAll(c.Request.Context()); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

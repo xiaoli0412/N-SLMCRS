@@ -223,3 +223,64 @@ func (s *Store) ModelUsageStats(ctx context.Context, window time.Duration) (map[
 
 // 触碰 strings 防止未用
 var _ = strings.TrimSpace
+
+// ModelHealth 单个模型在近 window 内的综合健康聚合（供模型广场可用度展示）。
+// 数据来源 request_logs（被动流量统计），与主动探活(model_probes)互补。
+type ModelHealth struct {
+	ModelID           string
+	RequestCount      int64
+	SuccessCount      int64
+	ErrorCount        int64
+	AvgLatencyMS      int64   // 成功请求的平均延迟（毫秒）
+	SuccessRate       float64 // 0..100
+	AvailabilityScore float64 // 0..100 综合可用度评分
+}
+
+// ModelHealthStats 聚合每个模型在近 window 内的健康指标（成功率+延迟+错误），
+// 返回 modelID → ModelHealth 映射，供模型广场拼装可用度视图。
+func (s *Store) ModelHealthStats(ctx context.Context, window time.Duration) (map[string]ModelHealth, error) {
+	cutoff := time.Now().Add(-window).Unix()
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT model,
+		       COUNT(*) AS total,
+		       SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS ok,
+		       SUM(CASE WHEN status!='success' THEN 1 ELSE 0 END) AS err,
+		       COALESCE(CAST(AVG(CASE WHEN status='success' AND latency_ms>0 THEN latency_ms END) AS INTEGER),0) AS avg_lat
+		FROM request_logs
+		WHERE ts > ?
+		GROUP BY model`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]ModelHealth)
+	for rows.Next() {
+		var h ModelHealth
+		if err := rows.Scan(&h.ModelID, &h.RequestCount, &h.SuccessCount, &h.ErrorCount, &h.AvgLatencyMS); err != nil {
+			return nil, err
+		}
+		if h.RequestCount > 0 {
+			h.SuccessRate = 100.0 * float64(h.SuccessCount) / float64(h.RequestCount)
+		}
+		h.AvailabilityScore = availabilityScore(h.SuccessRate, h.AvgLatencyMS, h.RequestCount)
+		out[h.ModelID] = h
+	}
+	return out, rows.Err()
+}
+
+// availabilityScore 综合可用度评分（0..100）：
+// 成功率 65% 权重 + 延迟 35% 权重（延迟 2s+ 视为 0 分）。
+// 无流量时返回 0（前端显示"无数据"）。
+func availabilityScore(successRate float64, avgLatencyMS int64, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	successFraction := successRate / 100.0
+	latencyNorm := 1.0 - float64(avgLatencyMS)/2000.0
+	if latencyNorm < 0 {
+		latencyNorm = 0
+	} else if latencyNorm > 1 {
+		latencyNorm = 1
+	}
+	return 100.0 * (0.65*successFraction + 0.35*latencyNorm)
+}

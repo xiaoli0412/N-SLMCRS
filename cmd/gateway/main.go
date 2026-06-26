@@ -102,9 +102,12 @@ func main() {
 	// 6. 失效检测 + 模型同步
 	checker := modelmeta.NewStalenessChecker(store)
 	syncer := modelmeta.NewSyncer(store, client, cfg.Upstream.ModelSyncInterval)
+	// 6b. 模型探活器（主动可用度检测，仿 new-api；与 request_logs 被动统计互补）
+	prober := modelmeta.NewProber(store, client, 10*time.Minute)
 
 	go apCtrl.Start(rootCtx) // Auto-Pilot 30s 决策循环
 	go syncer.Start(rootCtx) // 模型目录同步
+	go prober.Start(rootCtx) // 模型探活
 
 	// 7. 路由
 	if os.Getenv("GIN_MODE") == "" {
@@ -128,6 +131,7 @@ func main() {
 	adminHandler := admin.New(store, syncer, cfg)
 	adminHandler.SetAutopilot(apCtrl)
 	adminHandler.SetScheduler(sched)
+	adminHandler.SetProber(prober)
 	adminHandler.RegisterRoutes(r)
 
 	// 前端静态资源 + SPA 兜底（最后注册）
