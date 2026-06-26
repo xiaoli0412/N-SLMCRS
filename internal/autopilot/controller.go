@@ -37,19 +37,40 @@ type Controller struct {
 	healthWindow time.Duration
 	maxConcurrency    int
 	defaultConcurrency int
+
+	// llmBackendMode LLM 引擎后端模式：stub（确定性模板）/ gateway（真 LLM）。
+	// 供启动日志与前端可观测（避免误以为"AI 在工作"而实为 stub）。
+	llmBackendMode string
+}
+
+// LLMConfig LLM 引擎后端配置（来自 config.AutoPilotConfig）。三者任一为空→stub。
+type LLMConfig struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+}
+
+// configured 是否齐全（启用真 LLM 后端）。
+func (c LLMConfig) configured() bool {
+	return c.BaseURL != "" && c.APIKey != "" && c.Model != ""
 }
 
 // NewController 创建总控。
 // maxConcurrency/defaultConcurrency 用于快照与并发决策钳位。
-// LLM 引擎后端：环境变量 LLM_BASE_URL/LLM_API_KEY/LLM_MODEL 齐全时接真实网关，
-// 否则回退 stubBackend（确定性模板策略）。
+// llm 为 LLM 引擎后端配置（来自 config.AutoPilotConfig）：齐全时接真实网关，
+// 否则回退 stubBackend（确定性模板策略）。llm 由 main.go 从统一配置注入，不再裸读 os.Getenv。
 func NewController(store *data.Store, health *ratelimit.HealthTracker, rl *ratelimit.Manager,
-	rt *Runtime, healthWindow time.Duration, defaultConcurrency, maxConcurrency int) *Controller {
+	rt *Runtime, healthWindow time.Duration, defaultConcurrency, maxConcurrency int, llm LLMConfig) *Controller {
 	exec := NewExecutor(store, rt)
+	backend := newGatewayBackend(llm.BaseURL, llm.APIKey, llm.Model)
 	engines := map[EngineID]Engine{
 		EngineAdaptive: NewAdaptiveEngine(),
 		EngineForecast: NewForecastEngine(),
-		EngineLLM:      NewLLMEngine(newGatewayBackendFromEnv()),
+		EngineLLM:      NewLLMEngine(backend),
+	}
+	mode := "stub"
+	if backend != nil {
+		mode = "gateway"
 	}
 	return &Controller{
 		store:   store,
@@ -63,6 +84,7 @@ func NewController(store *data.Store, health *ratelimit.HealthTracker, rl *ratel
 		healthWindow:      healthWindow,
 		maxConcurrency:    maxConcurrency,
 		defaultConcurrency: defaultConcurrency,
+		llmBackendMode:    mode,
 	}
 }
 
@@ -74,7 +96,7 @@ func (c *Controller) Start(ctx context.Context) {
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
-	log.Printf("[autopilot] 启动：mode=%s engine=%s tick=%s", c.mode, c.activeEngine.ID(), tickInterval)
+	log.Printf("[autopilot] 启动：mode=%s engine=%s llm=%s tick=%s", c.mode, c.activeEngine.ID(), c.llmBackendMode, tickInterval)
 	for {
 		select {
 		case <-ctx.Done():
@@ -182,11 +204,8 @@ func (c *Controller) State(ctx context.Context) State {
 	dpm, interventions, events := c.exec.Stats()
 	pending := c.exec.CountPending(ctx)
 
-	// 标记每条事件的 mode
-	for i := range events {
-		events[i].Mode = mode
-	}
-
+	// 事件 Mode 已在 recordEvent 时按当时模式写入，无需此处事后回填
+	// （旧实现把全部历史事件重标为当前模式，会误标跨模式切换前的旧事件）。
 	rt := State{
 		Mode:               mode,
 		Engine:             engine,
@@ -233,9 +252,19 @@ func (c *Controller) Snapshot(ctx context.Context) (Snapshot, error) {
 	return c.snapshot(ctx)
 }
 
-// ApprovePending / RejectPending 透传给执行器。
-func (c *Controller) ApprovePending(ctx context.Context, key string) error { return c.exec.ApprovePending(ctx, key) }
-func (c *Controller) RejectPending(ctx context.Context, key string) error  { return c.exec.RejectPending(ctx, key) }
+// ApprovePending / RejectPending 透传给执行器，携带当前模式（事件需按当时模式记录）。
+func (c *Controller) ApprovePending(ctx context.Context, key string) error {
+	c.mu.RLock()
+	mode := c.mode
+	c.mu.RUnlock()
+	return c.exec.ApprovePending(ctx, mode, key)
+}
+func (c *Controller) RejectPending(ctx context.Context, key string) error {
+	c.mu.RLock()
+	mode := c.mode
+	c.mu.RUnlock()
+	return c.exec.RejectPending(ctx, mode, key)
+}
 func (c *Controller) ListPending(ctx context.Context) ([]data.SettingEntry, error) {
 	return c.exec.ListPending(ctx)
 }

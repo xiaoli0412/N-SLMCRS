@@ -30,6 +30,9 @@ type Config struct {
 
 	// Auth 鉴权配置
 	Auth AuthConfig
+
+	// AutoPilot 智能调度（Auto-Pilot）配置
+	AutoPilot AutoPilotConfig
 }
 
 // ServerConfig HTTP 服务配置。
@@ -84,6 +87,25 @@ type AuthConfig struct {
 	DownstreamKeyPrefix string
 }
 
+// AutoPilotConfig 智能调度（Auto-Pilot）配置。
+//
+// LLM 决策引擎后端：三者齐全（非空）时，LLM 引擎调用真实大模型做语义推理；
+// 任一为空则回退确定性 stub（仍可产出可执行动作，但非真 LLM）。
+// 此处为可选配置，不参与 validate 的强制校验——stub 是合法默认。
+type AutoPilotConfig struct {
+	// LLMBaseURL 网关自身转发地址或任意 OpenAI 兼容端点（如 http://localhost:8787/v1）
+	LLMBaseURL string
+	// LLMAPIKey 下游凭证（sk-nv-xxx，需先在管理面板签发）
+	LLMAPIKey string
+	// LLMModel 目标模型，如 meta/llama-3.1-8b-instruct
+	LLMModel string
+}
+
+// LLMConfigured 三者齐全则返回 true（启用真 LLM 后端）。
+func (a AutoPilotConfig) LLMConfigured() bool {
+	return a.LLMBaseURL != "" && a.LLMAPIKey != "" && a.LLMModel != ""
+}
+
 // Load 从环境变量和 .env 文件加载配置。
 func Load() (*Config, error) {
 	// .env 可选（容器/裸机可能只用环境变量）
@@ -115,6 +137,11 @@ func Load() (*Config, error) {
 		},
 		Auth: AuthConfig{
 			DownstreamKeyPrefix: envStr("DOWNSTREAM_KEY_PREFIX", "sk-nv-"),
+		},
+		AutoPilot: AutoPilotConfig{
+			LLMBaseURL: envStr("LLM_BASE_URL", ""),
+			LLMAPIKey:  envStr("LLM_API_KEY", ""),
+			LLMModel:   envStr("LLM_MODEL", ""),
 		},
 	}
 

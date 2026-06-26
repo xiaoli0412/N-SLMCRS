@@ -3,10 +3,10 @@
 > NVIDIA Studio LLM **Concurrent Dispatch** Gateway — 聚合多账号 `nvapi-` 密钥、对热模型发起 N 路并发请求并**先到先得**，单二进制内置管理面板。
 
 <p align="center">
-  <img alt="Go" src="https://img.shields.io/badge/Go-1.24-76b900?logo=go&logoColor=white">
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.25-76b900?logo=go&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-pure--Go-003b57?logo=sqlite&logoColor=white">
-  <img alt="License" src="https://img.shields.io/badge/status-v0.2-green">
+  <img alt="License" src="https://img.shields.io/badge/status-v0.4.0-green">
 </p>
 
 ---

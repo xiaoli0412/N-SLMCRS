@@ -35,21 +35,35 @@ func (e *ForecastEngine) ID() EngineID { return EngineForecast }
 // Decide 依据快照决策。
 func (e *ForecastEngine) Decide(_ context.Context, snap Snapshot) ([]Action, error) {
 	series := snap.Series
-	// 至少需要 2 个季节周期（120 桶）才能可靠拟合；数据不足则不误动。
-	minPoints := e.seasonLen * 2
-	if len(series) < minPoints {
+	// 数据过少不误动（避免噪声）
+	const minData = 20
+	if len(series) < minData {
 		return nil, nil
 	}
 
-	// 取 Count 序列（去掉可能的尾零空桶）
+	// 季节长度自适应：理想 60（1h 周期），数据不足 2 周期时缩短到 len/4（下限 2）。
+	// 这样新部署/低流量场景（20+ 桶即可）也能触发预测，而非强求 2h 时序。
+	L := 60
+	if len(series) < L*2 {
+		L = len(series) / 4
+		if L < 2 {
+			L = 2
+		}
+	}
+	e.seasonLen = L
+
+	// 取 Count 序列
 	counts := make([]float64, 0, len(series))
 	for _, p := range series {
 		counts = append(counts, float64(p.Count))
 	}
 
 	level, trend, season := e.fit(counts)
-	// 预测未来 1 分钟（下一桶）的请求数；折算为 RPM（桶=1分钟时相等）
-	forecastNext := (level + trend) * season[0]
+	// 预测未来 1 分钟（下一桶）的请求数；折算为 RPM（桶=1分钟时相等）。
+	// fit 为加法模型（deseasonalized = data - season），故预测用加法：level+trend+season[0]。
+	// 旧实现用乘法 (level+trend)*season[0]，在季节分量≈0（如平稳流量）时预测≈0，
+	// 导致引擎几乎永不触发——已修正为加法。
+	forecastNext := level + trend + season[0]
 	if forecastNext < 0 {
 		forecastNext = 0
 	}

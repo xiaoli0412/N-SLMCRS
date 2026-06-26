@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"time"
 )
 
@@ -16,7 +15,7 @@ import (
 // 与 stubBackend 相反：构造 OpenAI 兼容请求 → POST {baseURL}/chat/completions
 // → 取 choices[0].message.content → 交给 parseLLMActions 解析。
 //
-// 装配：LLM_BASE_URL / LLM_API_KEY / LLM_MODEL 任一为空则回退 stubBackend。
+// 装配：由 Controller 从 config.AutoPilotConfig 注入；三者任一为空则返回 nil（调用方回退 stub）。
 // baseURL 为网关转发地址（如 http://localhost:8787/v1），apiKey 为下游凭证。
 type gatewayBackend struct {
 	baseURL string // 如 http://localhost:8787/v1（不含末尾斜杠）
@@ -25,11 +24,9 @@ type gatewayBackend struct {
 	client  *http.Client
 }
 
-// newGatewayBackendFromEnv 从环境变量装配网关后端；任一缺失返回 nil（用 stub）。
-func newGatewayBackendFromEnv() *gatewayBackend {
-	base := os.Getenv("LLM_BASE_URL")
-	key := os.Getenv("LLM_API_KEY")
-	model := os.Getenv("LLM_MODEL")
+// newGatewayBackend 从已加载的 LLM 配置装配网关后端；任一缺失返回 nil（调用方用 stub）。
+// base/key/model 来自 config.AutoPilotConfig，避免在此处裸读 os.Getenv 绕过统一配置校验。
+func newGatewayBackend(base, key, model string) *gatewayBackend {
 	if base == "" || key == "" || model == "" {
 		return nil
 	}

@@ -50,7 +50,7 @@ func (e *Executor) Apply(ctx context.Context, mode Mode, actions []Action) int {
 		switch mode {
 		case ModeManual:
 			// 仅观察记录
-			e.recordEvent(ctx, a, false)
+			e.recordEvent(ctx, a, mode, false)
 			e.logAudit(ctx, a, false, "manual:仅观察")
 
 		case ModeAssisted:
@@ -66,15 +66,15 @@ func (e *Executor) Apply(ctx context.Context, mode Mode, actions []Action) int {
 					continue
 				}
 				applied++
-				e.recordEvent(ctx, a, true)
-				e.logAudit(ctx, a, true, "assisted:可逆调参即时生效")
+			e.recordEvent(ctx, a, mode, true)
+			e.logAudit(ctx, a, true, "assisted:可逆调参即时生效")
 			}
 
 		case ModeFullAuto:
 			// 破坏性动作需过置信度门槛
 			if isDestructive(a.Kind) && a.Confidence < minConfidence {
-				e.recordEvent(ctx, a, false)
-				e.logAudit(ctx, a, false, fmt.Sprintf("fullauto:置信度%.2f<%.2f跳过", a.Confidence, minConfidence))
+			e.recordEvent(ctx, a, mode, false)
+			e.logAudit(ctx, a, false, fmt.Sprintf("fullauto:置信度%.2f<%.2f跳过", a.Confidence, minConfidence))
 				continue
 			}
 			if err := e.execute(ctx, a); err != nil {
@@ -82,7 +82,7 @@ func (e *Executor) Apply(ctx context.Context, mode Mode, actions []Action) int {
 				continue
 			}
 			applied++
-			e.recordEvent(ctx, a, true)
+			e.recordEvent(ctx, a, mode, true)
 			e.logAudit(ctx, a, true, "fullauto:已执行")
 		}
 	}
@@ -143,8 +143,8 @@ func (e *Executor) writePending(ctx context.Context, a Action) error {
 	return e.store.SetSetting(ctx, key, string(b))
 }
 
-// ApprovePending 批准一个 pending 建议（按 settings key）。
-func (e *Executor) ApprovePending(ctx context.Context, settingKey string) error {
+// ApprovePending 批准一个 pending 建议（按 settings key）。mode 为当前运行模式（事件记录用）。
+func (e *Executor) ApprovePending(ctx context.Context, mode Mode, settingKey string) error {
 	v, err := e.store.GetSetting(ctx, settingKey)
 	if err != nil {
 		return err
@@ -156,16 +156,18 @@ func (e *Executor) ApprovePending(ctx context.Context, settingKey string) error 
 	if err := e.execute(ctx, a); err != nil {
 		return err
 	}
+	e.recordEvent(ctx, a, mode, true)
 	e.logAudit(ctx, a, true, "assisted:人工批准后执行")
 	e.store.DeleteSetting(ctx, settingKey)
 	return nil
 }
 
-// RejectPending 驳回一个 pending 建议。
-func (e *Executor) RejectPending(ctx context.Context, settingKey string) error {
+// RejectPending 驳回一个 pending 建议。mode 为当前运行模式（事件记录用）。
+func (e *Executor) RejectPending(ctx context.Context, mode Mode, settingKey string) error {
 	v, _ := e.store.GetSetting(ctx, settingKey)
 	var a Action
 	_ = json.Unmarshal([]byte(v), &a)
+	e.recordEvent(ctx, a, mode, false)
 	e.logAudit(ctx, a, false, "assisted:人工驳回")
 	return e.store.DeleteSetting(ctx, settingKey)
 }
@@ -188,13 +190,14 @@ func (e *Executor) logAudit(ctx context.Context, a Action, applied bool, note st
 }
 
 // recordEvent 追加到环形缓冲（最近事件，前端展示，保留 50 条）。
-func (e *Executor) recordEvent(_ context.Context, a Action, applied bool) {
+// mode 按事件发生时的模式记录，避免 State 事后回填把跨模式旧事件误标为当前模式。
+func (e *Executor) recordEvent(_ context.Context, a Action, mode Mode, applied bool) {
 	e.statsMu.Lock()
 	defer e.statsMu.Unlock()
 	e.recentEvents = append(e.recentEvents, EventRecord{
 		TS:         time.Now().Unix(),
 		Engine:     a.Source,
-		Mode:       "", // 由 Controller 在调用时已确定；这里仅动作来源
+		Mode:       mode,
 		Kind:       a.Kind,
 		Detail:     a.Reason,
 		Reason:     a.Reason,

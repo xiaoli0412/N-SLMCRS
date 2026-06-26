@@ -141,7 +141,7 @@ func TestExecutor_AssistedWritesPending(t *testing.T) {
 
 	// 批准后应实际执行熔断（status → circuit_open）
 	settingKey := pending[0].Key
-	if err := exec.ApprovePending(context.Background(), settingKey); err != nil {
+	if err := exec.ApprovePending(context.Background(), ModeAssisted, settingKey); err != nil {
 		t.Fatalf("ApprovePending: %v", err)
 	}
 	k, _ := store.GetUpstreamKey(context.Background(), keyID)

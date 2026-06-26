@@ -15,7 +15,7 @@ func newTestController(t *testing.T) (*Controller, *Runtime) {
 	rt := NewRuntime()
 	health := ratelimit.NewHealthTracker(2 * time.Minute)
 	rl := ratelimit.NewManager(40)
-	ctrl := NewController(store, health, rl, rt, 2*time.Minute, 5, 10)
+	ctrl := NewController(store, health, rl, rt, 2*time.Minute, 5, 10, LLMConfig{})
 	return ctrl, rt
 }
 

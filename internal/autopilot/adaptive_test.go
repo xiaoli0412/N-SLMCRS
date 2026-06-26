@@ -42,11 +42,12 @@ func TestAdaptiveEngine_NoDataNoAction(t *testing.T) {
 }
 
 // TestAdaptiveEngine_LowGlobalRateProducesConcurrency 全局成功率偏离目标时，
-// 引擎应产出 set_concurrency 且落在合法钳位区间 [1, Max]。
-// 注：PID 误差为正（成功率低于目标）时引擎按设计向上调并发以增加重试，方向不在测试断言范围。
+// 引擎应产出 set_concurrency 且建议值低于默认基线（back-off），落在合法区间 [1, Max]。
+// 这是 PID 符号修正的回归用例：旧实现 base + u*... 在 err 正向（成功率低）时反而升并发，
+// 与"成功率低→降并发"语义相反；此处锁定修正后的方向。
 func TestAdaptiveEngine_LowGlobalRateProducesConcurrency(t *testing.T) {
 	e := NewAdaptiveEngine()
-	snap := makeSnap(0.4, 0, 8, 5, 10)
+	snap := makeSnap(0.4, 0, 8, 5, 10) // 成功率 0.4 远低于目标 0.99
 	acts, err := e.Decide(context.Background(), snap)
 	if err != nil {
 		t.Fatalf("Decide 出错: %v", err)
@@ -63,6 +64,10 @@ func TestAdaptiveEngine_LowGlobalRateProducesConcurrency(t *testing.T) {
 	got := int(conc.Value)
 	if got < 1 || got > snap.MaxConcurrency {
 		t.Fatalf("并发度 %d 越界 [1,%d]", got, snap.MaxConcurrency)
+	}
+	// 低成功率应 back-off：建议值低于默认基线
+	if got >= snap.DefaultConcurrency {
+		t.Fatalf("低成功率应建议低于默认基线 %d 的并发度（back-off），得到 %d", snap.DefaultConcurrency, got)
 	}
 }
 
@@ -127,7 +132,7 @@ func TestAdaptiveEngine_RepeatedDecideStable(t *testing.T) {
 	}
 }
 
-// TestForecastEngine_InsufficientDataNoAction 数据不足（<2 个周期）应不误动。
+// TestForecastEngine_InsufficientDataNoAction 数据不足（<minData）应不误动。
 func TestForecastEngine_InsufficientDataNoAction(t *testing.T) {
 	e := NewForecastEngine()
 	snap := makeSnap(0.99, 0, 5, 5, 10)
@@ -138,6 +143,34 @@ func TestForecastEngine_InsufficientDataNoAction(t *testing.T) {
 	}
 	if len(acts) != 0 {
 		t.Fatalf("时序数据不足时应不产出动作，得到 %v", acts)
+	}
+}
+
+// TestForecastEngine_HighTrafficThrottles 高流量预测逼近容量上限时，引擎应预降并发。
+// 验证两处修正：季节长度自适应（30 桶即可触发，无需 2h）+ 加法预测公式（平稳流量下不再≈0）。
+func TestForecastEngine_HighTrafficThrottles(t *testing.T) {
+	e := NewForecastEngine()
+	snap := makeSnap(0.99, 0, 8, 5, 10) // 1 个启用密钥 → 容量 40 RPM
+	// 30 桶每分钟 50 请求 → 预测 50 > 容量 40 → 利用率 125% → 预降并发
+	snap.Series = make([]data.TimeSeriesPoint, 30)
+	for i := range snap.Series {
+		snap.Series[i].Count = 50
+	}
+	acts, err := e.Decide(context.Background(), snap)
+	if err != nil {
+		t.Fatalf("Decide 出错: %v", err)
+	}
+	var conc *Action
+	for i := range acts {
+		if acts[i].Kind == ActSetConcurrency {
+			conc = &acts[i]
+		}
+	}
+	if conc == nil {
+		t.Fatalf("逼近容量上限时应产出 set_concurrency 预降并发，得到 %v", acts)
+	}
+	if int(conc.Value) >= snap.CurrentConcurrency {
+		t.Fatalf("预降并发应低于当前 %d，得到 %d", snap.CurrentConcurrency, int(conc.Value))
 	}
 }
 

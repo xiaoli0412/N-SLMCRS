@@ -91,7 +91,8 @@ func main() {
 	apRuntime := autopilot.NewRuntime()
 	sched.SetRuntime(apRuntime)
 	apCtrl := autopilot.NewController(store, health, rlMgr, apRuntime,
-		2*time.Minute, cfg.Scheduler.DefaultConcurrency, cfg.Scheduler.MaxConcurrency)
+		2*time.Minute, cfg.Scheduler.DefaultConcurrency, cfg.Scheduler.MaxConcurrency,
+		autopilot.LLMConfig{BaseURL: cfg.AutoPilot.LLMBaseURL, APIKey: cfg.AutoPilot.LLMAPIKey, Model: cfg.AutoPilot.LLMModel})
 
 	// 5c. 启动时加载已持久化的熔断/调度覆盖（来自 settings 表）并应用到调度器
 	if err := admin.LoadPersistedSchedulerOverrides(rootCtx, sched, store); err != nil {

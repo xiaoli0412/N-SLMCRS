@@ -76,13 +76,15 @@ func (e *AdaptiveEngine) Decide(_ context.Context, snap Snapshot) ([]Action, err
 	e.prevError = err
 	u := e.kp*err + e.ki*e.integral + e.kd*deriv
 
-	// u 为 [-1,1] 量级（误差越大 u 越大）；映射为并发度：
-	// 成功率高 → 提并发；成功率低 → 降并发。
+	// u 为误差的 PID 合成：成功率低于目标时 err>0、u>0。
+	// 映射为并发度：成功率低（u>0）→ 降并发（back-off）；成功率高（u<0）→ 提并发（scale-up）。
+	// 故取 base - u*...：u 正向时 target 低于基线，u 负向时高于基线。
+	// （旧实现 base + u*... 在 err 正向时反而升并发，与"低→降并发"语义相反，已修正。）
 	base := float64(snap.DefaultConcurrency)
 	if base <= 0 {
 		base = 5
 	}
-	target := base + u*float64(snap.MaxConcurrency)*0.5
+	target := base - u*float64(snap.MaxConcurrency)*0.5
 	// 钳位到 [1, MaxConcurrency]
 	if target < 1 {
 		target = 1
