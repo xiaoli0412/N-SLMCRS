@@ -143,6 +143,39 @@ export interface Credential {
   allowed_models: string
   total_requests: number
 }
+
+// v0.10：集成渠道（new-api / sapi 等下游中转网关对接）
+export interface Channel {
+  ID: number
+  Name: string
+  Type: string // newapi | sapi
+  BaseURL: string
+  APIKeyMask: string
+  Enabled: boolean
+  LastSyncAt: number
+  TotalRequests: number
+  CreatedAt: number
+  UpdatedAt: number
+}
+// 渠道配置（管理员粘贴到 new-api/sapi 的接入配置，含明文密钥仅创建时返回一次）
+export interface ChannelConfig {
+  type: string
+  name: string
+  base_url: string
+  api_key: string
+  models: string[]
+  usage_url: string
+}
+export interface AddChannelResp {
+  channel: Channel
+  config: ChannelConfig
+}
+// Webhook 事件回调配置（secret 为掩码占位，非明文）
+export interface WebhookCfg {
+  url: string
+  secret: string
+  events: string
+}
 export interface Metrics {
   Window: string
   TotalRequests: number
@@ -363,4 +396,21 @@ export const api = {
   deleteBackup: (file: string) => request('/api/admin/backup/' + encodeURIComponent(file), { method: 'DELETE' }),
   downloadBackup: (file: string) =>
     requestBlob('/api/admin/backup/' + encodeURIComponent(file)).then((b) => URL.createObjectURL(b)),
+
+  // v0.10：集成钩子——渠道管理 + webhook 配置
+  listChannels: () => request<{ data: Channel[] }>('/api/admin/hooks/channels'),
+  addChannel: (data: { name: string; type: string; base_url?: string; api_key: string }) =>
+    request<AddChannelResp>('/api/admin/hooks/channels', { method: 'POST', body: JSON.stringify(data) }),
+  deleteChannel: (id: number) => request(`/api/admin/hooks/channels/${id}`, { method: 'DELETE' }),
+  toggleChannel: (id: number, enabled: boolean) =>
+    request(`/api/admin/hooks/channels/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),
+  channelConfig: (id: number) => request<{ config: ChannelConfig }>(`/api/admin/hooks/channels/${id}/config`),
+  channelUsage: (id: number) =>
+    request<{ channel_id: number; total_requests: number; window: string; total_tokens: number; success_rate: number }>(
+      `/api/admin/hooks/channels/${id}/usage`,
+    ),
+  getWebhook: () => request<WebhookCfg>('/api/admin/hooks/webhook'),
+  putWebhook: (cfg: WebhookCfg) =>
+    request<{ ok: boolean }>('/api/admin/hooks/webhook', { method: 'PUT', body: JSON.stringify(cfg) }),
+  testWebhook: () => request<{ ok: boolean }>('/api/admin/hooks/webhook/test', { method: 'POST' }),
 }
