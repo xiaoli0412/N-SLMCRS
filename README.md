@@ -7,7 +7,20 @@
   <img alt="React" src="https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-pure--Go-003b57?logo=sqlite&logoColor=white">
   <img alt="License" src="https://img.shields.io/badge/status-v0.6.0-76b900">
+  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.6.0-76b900?logo=github&logoColor=white"></a>
 </p>
+
+> 📦 **最新发布 [v0.6.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.6.0)** — UI 换风 shadcn · 模型广场可用度 · Auto-Pilot agent 化 · 真实环境验证。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
+
+---
+
+## 🆕 v0.6.0 亮点
+
+- 🎨 **shadcn 风扁平暗色主题**：CVA `Button`/`Badge` 原语 + Tailwind `surface` 色板，全站 8 模块统一观感，Vite 实时构建嵌入 Go 二进制
+- 📊 **模型广场双路可用度（仿 new-api）**：每模型被动聚合评分（availability_score / avg_latency / 错误数）+ 主动探活（probe_ok / 延迟），单模型 Test 与一键 Probe-All
+- 🧠 **Auto-Pilot agent 化**：LLM 引擎 ReAct 循环（think→act→observe）+ function-calling 调度工具 + 可调试推理轨迹 + `LLMBackendMode`（stub/gateway）徽标
+- 🔌 **熔断半开探测自愈** + 流式响应健康记录补全
+- 🐳 **Docker 部署就绪**：`ARG VERSION` 经 ldflags 注入（`/health` 与 `-version` 一致），支持 `latest` + `v0.6.0` 双标签构建
 
 ---
 
