@@ -29,6 +29,7 @@ import (
 	"github.com/nslmcrs/gateway/internal/config"
 	"github.com/nslmcrs/gateway/internal/data"
 	"github.com/nslmcrs/gateway/internal/entry"
+	"github.com/nslmcrs/gateway/internal/hooks"
 	"github.com/nslmcrs/gateway/internal/logging"
 	"github.com/nslmcrs/gateway/internal/modelhealth"
 	"github.com/nslmcrs/gateway/internal/modelmeta"
@@ -102,6 +103,13 @@ func main() {
 	// 5b. Auto-Pilot：共享 Runtime 注入调度器，Controller 周期决策 → Executor 写 Runtime/落库
 	apRuntime := autopilot.NewRuntime()
 	sched.SetRuntime(apRuntime)
+	// 5b.1 Webhook 事件回调（v0.10）：成功/失败/限流时异步外发通知
+	webhook := hooks.NewWebhook(hooks.WebhookConfig{
+		URL:    cfg.Hooks.WebhookURL,
+		Secret: cfg.Hooks.WebhookSecret,
+		Events: cfg.Hooks.WebhookEvents,
+	})
+	sched.SetWebhook(webhook)
 	apCtrl := autopilot.NewController(store, health, rlMgr, apRuntime,
 		2*time.Minute, cfg.Scheduler.DefaultConcurrency, cfg.Scheduler.MaxConcurrency,
 		autopilot.LLMConfig{BaseURL: cfg.AutoPilot.LLMBaseURL, APIKey: cfg.AutoPilot.LLMAPIKey, Model: cfg.AutoPilot.LLMModel})
@@ -164,6 +172,7 @@ func main() {
 	adminHandler.SetProber(prober)
 	adminHandler.SetBackup(backupSvc)
 	adminHandler.SetHealthSweeper(healthSweeper)
+	adminHandler.SetWebhook(webhook) // v0.10：启用 /api/admin/hooks/* 渠道管理与 webhook 配置/测试
 	adminHandler.RegisterRoutes(r)
 
 	// 前端静态资源 + SPA 兜底（最后注册）

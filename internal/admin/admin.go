@@ -53,6 +53,7 @@ import (
 	"github.com/nslmcrs/gateway/internal/backup"
 	"github.com/nslmcrs/gateway/internal/config"
 	"github.com/nslmcrs/gateway/internal/data"
+	"github.com/nslmcrs/gateway/internal/hooks"
 	"github.com/nslmcrs/gateway/internal/modelcatalog"
 	"github.com/nslmcrs/gateway/internal/modelhealth"
 	"github.com/nslmcrs/gateway/internal/modelmeta"
@@ -74,6 +75,7 @@ type Handler struct {
 	sched    *scheduler.Scheduler  // 调度器（可选；用于运行时改熔断/并发配置）
 	bk       *backup.Service       // 数据库备份服务（v0.8；可选）
 	sweeper  *modelhealth.Sweeper  // 模型级健康扫描器（v0.9；可选）
+	webhook  *hooks.Webhook        // 事件回调服务（v0.10；可选）
 }
 
 // New 创建管理 API 处理器。
@@ -102,6 +104,12 @@ func (h *Handler) SetBackup(b *backup.Service) *Handler {
 // SetHealthSweeper 注入模型级健康扫描器（启用 /api/admin/models/circuit 系列，v0.9）。
 func (h *Handler) SetHealthSweeper(s *modelhealth.Sweeper) *Handler {
 	h.sweeper = s
+	return h
+}
+
+// SetWebhook 注入事件回调服务（启用 /api/admin/hooks/webhook 系列，v0.10）。
+func (h *Handler) SetWebhook(w *hooks.Webhook) *Handler {
+	h.webhook = w
 	return h
 }
 
@@ -244,6 +252,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		g.GET("/autopilot/pending", h.apListPending)
 		g.POST("/autopilot/pending/:key/approve", h.apApprovePending)
 		g.POST("/autopilot/pending/:key/reject", h.apRejectPending)
+
+		// 集成钩子（v0.10：new-api/sapi 渠道 + webhook）
+		g.GET("/hooks/channels", h.listChannels)
+		g.POST("/hooks/channels", h.addChannel)
+		g.DELETE("/hooks/channels/:id", h.deleteChannel)
+		g.PATCH("/hooks/channels/:id", h.toggleChannel)
+		g.GET("/hooks/channels/:id/config", h.channelConfig)
+		g.GET("/hooks/channels/:id/usage", h.channelUsage)
+		g.GET("/hooks/webhook", h.getWebhookCfg)
+		g.PUT("/hooks/webhook", h.putWebhookCfg)
+		g.POST("/hooks/webhook/test", h.testWebhook)
 	}
 }
 

@@ -153,6 +153,21 @@ CREATE TABLE IF NOT EXISTS model_circuit (
 );
 CREATE INDEX IF NOT EXISTS idx_model_circuit_state ON model_circuit(state);
 
+-- 集成渠道（v0.10：new-api / sapi 等下游中转网关对接，模型同步 + 计费回采）
+CREATE TABLE IF NOT EXISTS channels (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT    NOT NULL,
+    type            TEXT    NOT NULL,                 -- newapi | sapi
+    base_url        TEXT    DEFAULT '',               -- 渠道接入本网关的地址（如 http://host:8787/v1）
+    api_key_mask    TEXT    DEFAULT '',               -- 脱敏展示用
+    api_key_hash    TEXT    DEFAULT '',               -- bcrypt 哈希（渠道密钥，不下发明文）
+    enabled         INTEGER DEFAULT 1,
+    last_sync_at    INTEGER DEFAULT 0,
+    total_requests  INTEGER DEFAULT 0,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+
 -- 动态设置（管理 API 可改）
 CREATE TABLE IF NOT EXISTS settings (
     key             TEXT PRIMARY KEY,

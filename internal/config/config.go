@@ -42,6 +42,19 @@ type Config struct {
 
 	// Logging 日志配置（v0.9）
 	Logging LoggingConfig
+
+	// Hooks 集成钩子配置（v0.10）
+	Hooks HooksConfig
+}
+
+// HooksConfig 集成钩子配置（v0.10 新增）。
+type HooksConfig struct {
+	// WebhookURL 事件回调地址；空则禁用 webhook
+	WebhookURL string
+	// WebhookSecret HMAC-SHA256 签名密钥
+	WebhookSecret string
+	// WebhookEvents 触发事件（逗号分隔：success,error,rate_limited,circuit）；空=全部
+	WebhookEvents string
 }
 
 // LoggingConfig 日志配置（v0.9）。
@@ -212,6 +225,11 @@ func Load() (*Config, error) {
 		Logging: LoggingConfig{
 			Level:  envStr("LOG_LEVEL", "info"),
 			Format: envStr("LOG_FORMAT", "json"),
+		},
+		Hooks: HooksConfig{
+			WebhookURL:    envStr("WEBHOOK_URL", ""),
+			WebhookSecret: envStr("WEBHOOK_SECRET", ""),
+			WebhookEvents: envStr("WEBHOOK_EVENTS", ""),
 		},
 	}
 

@@ -48,11 +48,23 @@ type Scheduler struct {
 	config    SchedulerConfig
 	mu        sync.RWMutex      // 保护 config 的运行时可变字段
 	runtime   RuntimeOverrides  // 可选：Auto-Pilot 注入（nil=用默认）
+	webhook   WebhookEmitter    // 可选：v0.10 事件回调（nil=不发射）
+}
+
+// WebhookEmitter 事件回调抽象（避免 scheduler 直接依赖 hooks 包）。
+// 与 hooks.Webhook.EmitFields 签名对齐，使 *hooks.Webhook 直接满足本接口。
+type WebhookEmitter interface {
+	EmitFields(ctx context.Context, typ, traceID, model, keyMask, reason string, status, latency int)
 }
 
 // SetRuntime 注入 Auto-Pilot 运行时覆盖（nil=清除，恢复默认）。
 func (s *Scheduler) SetRuntime(rt RuntimeOverrides) {
 	s.runtime = rt
+}
+
+// SetWebhook 注入事件回调（nil=清除，不发射）。
+func (s *Scheduler) SetWebhook(w WebhookEmitter) {
+	s.webhook = w
 }
 
 // Config 返回当前调度配置的快照（线程安全）。
@@ -554,6 +566,7 @@ func (s *Scheduler) recordSuccess(ctx context.Context, traceID, model string, ke
 	tokens := extractTokens(resp.Body)
 	s.markHealthy(ctx, key)
 	s.feedbackModelCircuit(ctx, model, true) // 被动路径：成功清零连续失败
+	s.emitWebhook(ctx, "success", traceID, model, key.KeyMask, "", resp.StatusCode, latency)
 	s.store.RecordRequest(ctx, data.RequestLog{
 		TraceID:          traceID,
 		DownstreamCred:   "",
@@ -576,6 +589,14 @@ func (s *Scheduler) recordSuccess(ctx context.Context, traceID, model string, ke
 func (s *Scheduler) recordResult(ctx context.Context, traceID, model string, key *data.UpstreamKey, upstreamMask, status string, httpStatus int, errMsg string, concurrency int) {
 	// 被动路径：成功清零，失败累加（达阈值转 open）
 	s.feedbackModelCircuit(ctx, model, status == "success")
+	// 事件回调：失败/限流时发射 webhook（成功由 recordSuccess 单独发射）
+	if status != "success" {
+		evType := "error"
+		if status == "rate_limited" {
+			evType = "rate_limited"
+		}
+		s.emitWebhook(ctx, evType, traceID, model, upstreamMask, errMsg, httpStatus, 0)
+	}
 	s.store.RecordRequest(ctx, data.RequestLog{
 		TraceID:        traceID,
 		UpstreamKey:   upstreamMask,
@@ -585,6 +606,14 @@ func (s *Scheduler) recordResult(ctx context.Context, traceID, model string, key
 		ErrorMessage:  errMsg,
 		Concurrency:   concurrency,
 	})
+}
+
+// emitWebhook 异步发射事件回调（webhook 未注入时无操作）。
+func (s *Scheduler) emitWebhook(ctx context.Context, typ, traceID, model, keyMask, reason string, status, latency int) {
+	if s.webhook == nil {
+		return
+	}
+	s.webhook.EmitFields(ctx, typ, traceID, model, keyMask, reason, status, latency)
 }
 
 // feedbackModelCircuit 被动反馈模型熔断状态（与 modelhealth 主动扫描互补）。
