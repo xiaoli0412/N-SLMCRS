@@ -64,11 +64,14 @@ if [[ -n "${GHCR_PAT:-}" ]]; then
   echo "$GHCR_PAT" | ssh_ok "docker login ghcr.io -u xiaoli0412 --password-stdin" >/dev/null 2>&1 || true
 fi
 
+# 优先使用生产 compose（bind-mount /opt/n-slmcrs/data）；否则回退默认 compose。
+# COMPOSE_FILE 在服务器端解析，保证探测基于服务器实际存在的文件。
 ssh_ok "set -e; cd '$REMOTE_DIR'; \
   git fetch --tags && git checkout $TAG 2>/dev/null || git pull --ff-only; \
   export TAG=$TAG; \
-  docker compose pull; \
-  docker compose up -d"
+  if [ -f docker-compose.prod.yml ]; then COMPOSE='docker compose -f docker-compose.prod.yml'; else COMPOSE='docker compose'; fi; \
+  \$COMPOSE pull; \
+  \$COMPOSE up -d"
 
 # ─── 4. 健康检查 ─────────────────────────────────────────
 echo "▸ [4/4] 健康检查…"
@@ -86,10 +89,10 @@ for _ in $(seq 1 30); do
 done
 
 echo
-ssh_ok "cd '$REMOTE_DIR' && docker compose ps"
+ssh_ok "cd '$REMOTE_DIR' && if [ -f docker-compose.prod.yml ]; then docker compose -f docker-compose.prod.yml ps; else docker compose ps; fi"
 if [[ "$ok" -ne 1 ]]; then
   echo "✗ 健康检查未通过，输出最近日志：" >&2
-  ssh_ok "cd '$REMOTE_DIR' && docker compose logs --tail=80" >&2 || true
+  ssh_ok "cd '$REMOTE_DIR' && if [ -f docker-compose.prod.yml ]; then docker compose -f docker-compose.prod.yml logs --tail=80; else docker compose logs --tail=80; fi" >&2 || true
   exit 1
 fi
 echo "✓ 部署完成：http://$REMOTE_HOST:8787  (tag=$TAG)"
