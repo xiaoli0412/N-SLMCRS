@@ -10,6 +10,9 @@
 FROM rust:1.83-alpine AS builder
 WORKDIR /src
 
+# alpine 版 rust 镜像缺 musl-dev，proc-macro 链接需 crti.o，故先装 musl-dev + gcc
+RUN apk add --no-cache musl-dev
+
 # 先拷 Cargo.toml 利用层缓存（依赖编译一次）
 COPY kernel-rs/Cargo.toml kernel-rs/Cargo.lock* ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release || true
