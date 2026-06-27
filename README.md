@@ -6,11 +6,20 @@
   <img alt="Go" src="https://img.shields.io/badge/Go-1.25-76b900?logo=go&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-pure--Go-003b57?logo=sqlite&logoColor=white">
-  <img alt="License" src="https://img.shields.io/badge/status-v0.9.0-76b900">
-  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.9.0-76b900?logo=github&logoColor=white"></a>
+  <img alt="License" src="https://img.shields.io/badge/status-v0.10.0-76b900">
+  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.10.0-76b900?logo=github&logoColor=white"></a>
 </p>
 
-> 📦 **最新发布 [v0.9.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.9.0)** — 模型级+永久熔断 · 双语错误 · 日志升级 · 模型参数二阶面板 · UI 全量重构。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
+> 📦 **最新发布 [v0.10.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.10.0)** — 集成钩子（Webhook 事件回调 + new-api/sapi 渠道对接）· 日志文件落盘 · Distribution 页真实化。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
+
+---
+
+## 🆕 v0.10.0 亮点
+
+- 🔗 **集成渠道（new-api / sapi）**：下游中转网关通过 OpenAI 兼容协议接入本网关；管理面板新增渠道管理（CRUD + 启停），创建时生成可粘贴的接入配置（含明文密钥仅此一次，其余脱敏），密钥 bcrypt 哈希存储不下发明文；计费用量回采端点 `/api/admin/hooks/channels/:id/usage`。
+- 📡 **Webhook 事件回调**：请求成功 / 失败 / 限流 / 熔断时异步 POST JSON 通知，带 `HMAC-SHA256` 签名（`X-N-SLMCRS-Signature`）；URL / 密钥 / 触发事件（success,error,rate_limited,circuit）均可在 Distribution 页热改并落库；支持一键发送测试事件。调度器经 `WebhookEmitter` 接口接线，成功由 `recordSuccess` 发射、失败/限流由 `recordResult` 发射。
+- 📝 **日志文件落盘**：`LOG_FILE` 非空时额外写日志文件（追加、自动建目录），建议指向 D 盘持久路径避免写满系统盘；顺手修复 `SetLevel` 重建 handler 丢失原格式/输出端的旧 bug。
+- 🎨 **Distribution 页真实化**：集成渠道表 + Webhook 配置卡替换原 v0.10 占位槽位；渠道密钥掩码、webhook secret 掩码保留。
 
 ---
 
@@ -37,6 +46,8 @@
 - **鉴权强化 + 首登强制改密**：默认 `ADMIN` 令牌首登强制修改并写入 bcrypt 哈希；改密前管理 API 全锁定。
 - **运维监控面板（shadcn 风）**：Vite + Tailwind 扁平暗色主题，实时成功率 / 请求量 / Token / 每 Key 健康度 / Auto-Pilot 快照 / 推理轨迹全维度图表。
 - **下游凭证签发**：向客户端分发 `sk-nv-xxx` 凭证，可配 RPM 限额与允许模型白名单。
+- **集成钩子（v0.10）**：new-api/sapi 渠道经 OpenAI 兼容协议接入（CRUD + 接入配置生成 + 计费回采）；Webhook 事件回调（成功/失败/限流/熔断，HMAC-SHA256 签名，热配置 + 测试）。
+- **日志文件落盘（v0.10）**：`LOG_FILE` 可选写日志文件（追加、自动建目录），stdout + app_logs 表 + 文件三路扇出。
 - **熔断/调度配置可持久化**：管理面板「系统设置」改值即时热生效并落库 `settings` 表，重启不丢失。
 - **单二进制**：前端通过 `//go:embed` 打包进 Go 二进制，无外部依赖（纯 Go SQLite，**无 CGO**）。
 

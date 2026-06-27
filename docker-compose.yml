@@ -3,7 +3,7 @@
 # 启动：
 #   docker compose up -d            # 本地已 build 或服务器已 pull 时
 #   docker compose build            # 本地构建（开发用）
-#   TAG=v0.9.0 docker compose pull  # 服务器从 ghcr 拉取已发布镜像
+#   TAG=v0.10.0 docker compose pull  # 服务器从 ghcr 拉取已发布镜像
 #
 # 生产部署（scripts/deploy.sh 自动执行）：
 #   git pull && docker compose pull && docker compose up -d
@@ -15,7 +15,7 @@
 services:
   gateway:
     build: .
-    image: ghcr.io/xiaoli0412/n-slmcrs-gateway:${TAG:-v0.9.0}
+    image: ghcr.io/xiaoli0412/n-slmcrs-gateway:${TAG:-v0.10.0}
     container_name: nslmcrs-gateway
     restart: unless-stopped
     ports:
@@ -54,7 +54,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.kernel
-    image: ghcr.io/xiaoli0412/n-slmcrs-kernel:${TAG:-v0.9.0}
+    image: ghcr.io/xiaoli0412/n-slmcrs-kernel:${TAG:-v0.10.0}
     container_name: nslmcrs-kernel
     restart: unless-stopped
     expose:
