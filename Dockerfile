@@ -5,7 +5,7 @@
 # 阶段三：最终运行镜像（distroless，仅含静态二进制 + ca-certificates）
 #
 # 用法：
-#   docker build -t nslmcrs/gateway:latest .
+#   docker build -t nslmcrs/gateway:latest -t nslmcrs/gateway:v0.6.0 .
 #   docker run -p 8787:8787 --env-file .env -v nslmcrs-data:/data nslmcrs/gateway:latest
 
 # ───────────────── 阶段一：前端构建 ─────────────────
@@ -22,7 +22,9 @@ RUN npm run build
 
 # ───────────────── 阶段二：Go 构建 ─────────────────
 # go.mod 要求 go >= 1.25.0（GOTOOLCHAIN=local 避免 BuildKit 拉取意外工具链）
+# VERSION 通过 --build-arg 注入主版本号，默认 v0.6.0；与前端 package.json 对齐。
 FROM golang:1.25-alpine AS go-builder
+ARG VERSION=v0.6.0
 WORKDIR /src
 
 # 依赖缓存
@@ -36,8 +38,9 @@ COPY . .
 COPY --from=web-builder /web/../internal/entry/dist ./internal/entry/dist
 
 # 静态编译（CGO 关闭，因为使用 modernc.org/sqlite 纯 Go 实现）
+# -X main.version 注入版本号（/health 与 -version 输出一致）
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
-RUN go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
+RUN go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/gateway ./cmd/gateway
 
 # ───────────────── 阶段三：运行时 ─────────────────
 FROM gcr.io/distroless/static-debian12:nonroot

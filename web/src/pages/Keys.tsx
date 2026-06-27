@@ -89,11 +89,11 @@ export default function Keys() {
       )}
 
       <div className="mb-4 flex flex-wrap items-center gap-2 justify-end">
-        <span className="mr-auto text-[11px] text-gray-500">
+        <span className="mr-auto text-[11px] text-surface-muted">
           共 <span className="text-gray-300 font-semibold">{keys.length}</span> 个密钥 ·
           活跃 <span className="text-nv-green font-semibold">{keys.filter((k) => k.enabled && k.status === 'active').length}</span>
         </span>
-        <button onClick={() => { setShowBulk(!showBulk); setShowAdd(false); setBulkResult(null) }} className="btn-ghost border border-white/[0.06]">
+        <button onClick={() => { setShowBulk(!showBulk); setShowAdd(false); setBulkResult(null) }} className="btn-ghost border border-surface-border">
           ⬆ {t('common.bulk_import')}
         </button>
         <button onClick={() => { setShowAdd(!showAdd); setShowBulk(false) }} className="btn-primary">
@@ -108,12 +108,12 @@ export default function Keys() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-[13px] font-semibold text-gray-200">批量导入上游密钥</div>
-                <div className="text-[11px] text-gray-500 mt-0.5">
+                <div className="text-[11px] text-surface-muted mt-0.5">
                   每行一个 <code className="text-nv-green">nvapi-xxx</code>，或用逗号 / 分号 / 空白分隔；自动去重并跳过已存在。
                 </div>
               </div>
               {parsedPreview.total > 0 && (
-                <div className="text-[11px] px-2.5 py-1 rounded-md border border-white/[0.06] bg-white/[0.02]">
+                <div className="text-[11px] px-2.5 py-1 rounded-md border border-surface-border bg-surface-card-hover">
                   解析 <span className="text-gray-200 font-semibold">{parsedPreview.total}</span> ·
                   合法 <span className="text-nv-green font-semibold">{parsedPreview.valid}</span>
                 </div>
@@ -128,25 +128,25 @@ export default function Keys() {
             />
             <div className="grid grid-cols-3 gap-3">
               <div>
-                <label className="text-[11px] text-gray-500">统一标签（可选）</label>
+                <label className="text-[11px] text-surface-muted">统一标签（可选）</label>
                 <input className="input mt-1" value={bulk.label} onChange={(e) => setBulk({ ...bulk, label: e.target.value })} placeholder="如：批量导入 2026-06" />
               </div>
               <div>
-                <label className="text-[11px] text-gray-500">统一邮箱（可选）</label>
+                <label className="text-[11px] text-surface-muted">统一邮箱（可选）</label>
                 <input className="input mt-1" value={bulk.email} onChange={(e) => setBulk({ ...bulk, email: e.target.value })} placeholder="注册邮箱" />
               </div>
               <div>
-                <label className="text-[11px] text-gray-500">RPM 覆盖（0=默认40）</label>
+                <label className="text-[11px] text-surface-muted">RPM 覆盖（0=默认40）</label>
                 <input type="number" className="input mt-1" value={bulk.rpm_override} onChange={(e) => setBulk({ ...bulk, rpm_override: +e.target.value })} />
               </div>
             </div>
 
             {bulkResult && (
-              <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 animate-slide-up">
+              <div className="rounded-lg border border-surface-border bg-surface-card-hover p-3 animate-slide-up">
                 <div className="flex items-center gap-4 text-[12px] mb-2">
                   <span className="text-nv-green font-semibold">✓ 新增 {bulkResult.added}</span>
                   <span className="text-amber-400 font-semibold">⊘ 跳过 {bulkResult.skipped}</span>
-                  <span className="text-gray-500">共 {bulkResult.added + bulkResult.skipped} 条解析</span>
+                  <span className="text-surface-muted">共 {bulkResult.added + bulkResult.skipped} 条解析</span>
                 </div>
                 {bulkResult.items.length > 0 && (
                   <div className="max-h-[180px] overflow-y-auto text-[11px] font-mono space-y-0.5">
@@ -159,7 +159,7 @@ export default function Keys() {
                           {it.status === 'added' ? '✓' : it.status === 'duplicate' ? '⊘' : '✗'}
                         </span>
                         <span className="text-gray-400 w-28 truncate">{it.key_mask || '—'}</span>
-                        <span className="text-gray-600">{it.status}{it.reason ? ` · ${it.reason}` : ''}</span>
+                        <span className="text-surface-muted">{it.status}{it.reason ? ` · ${it.reason}` : ''}</span>
                       </div>
                     ))}
                   </div>
@@ -181,19 +181,19 @@ export default function Keys() {
         <Card className="mb-4 animate-slide-up">
           <form onSubmit={submit} className="grid grid-cols-4 gap-3">
             <div>
-              <label className="text-[11px] text-gray-500">NVIDIA Key (nvapi-xxx)</label>
+              <label className="text-[11px] text-surface-muted">NVIDIA Key (nvapi-xxx)</label>
               <input className="input mt-1" value={form.key_value} onChange={(e) => setForm({ ...form, key_value: e.target.value })} placeholder="nvapi-xxxxxxxxxxxx" required />
             </div>
             <div>
-              <label className="text-[11px] text-gray-500">{t('common.status')} / 标签</label>
+              <label className="text-[11px] text-surface-muted">{t('common.status')} / 标签</label>
               <input className="input mt-1" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="账号备注" />
             </div>
             <div>
-              <label className="text-[11px] text-gray-500">邮箱</label>
+              <label className="text-[11px] text-surface-muted">邮箱</label>
               <input className="input mt-1" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="注册邮箱" />
             </div>
             <div>
-              <label className="text-[11px] text-gray-500">RPM 覆盖（0=默认40）</label>
+              <label className="text-[11px] text-surface-muted">RPM 覆盖（0=默认40）</label>
               <input type="number" className="input mt-1" value={form.rpm_override} onChange={(e) => setForm({ ...form, rpm_override: +e.target.value })} />
             </div>
             <div className="col-span-4 flex gap-2 justify-end">
@@ -205,10 +205,10 @@ export default function Keys() {
       )}
 
       {loading ? <Spinner /> : keys.length === 0 ? <EmptyState text="尚未配置上游密钥，点击右上角添加或批量导入" /> : (
-        <div className="glass-card overflow-hidden">
+        <div className="card overflow-hidden">
           <table className="w-full text-[13px]">
             <thead>
-              <tr className="bg-white/[0.02] text-gray-500 text-[11px] uppercase tracking-wider">
+              <tr className="bg-surface-card-hover text-surface-muted text-[11px] uppercase tracking-wider">
                 <th className="text-left px-4 py-2.5 font-semibold">密钥</th>
                 <th className="text-left px-4 py-2.5 font-semibold">标签</th>
                 <th className="text-left px-4 py-2.5 font-semibold">邮箱</th>
@@ -220,21 +220,21 @@ export default function Keys() {
             </thead>
             <tbody>
               {keys.map((k) => (
-                <tr key={k.id} className="border-t border-white/[0.04] hover:bg-white/[0.015]">
+                <tr key={k.id} className="border-t border-surface-border/60 hover:bg-surface-card-hover">
                   <td className="px-4 py-2.5 font-mono text-[12px] text-gray-300">{k.key_mask}</td>
                   <td className="px-4 py-2.5 text-gray-400">{k.label || '—'}</td>
-                  <td className="px-4 py-2.5 text-gray-500">{k.email || '—'}</td>
+                  <td className="px-4 py-2.5 text-surface-muted">{k.email || '—'}</td>
                   <td className="px-4 py-2.5 text-gray-400">{k.rpm_override || 40}</td>
                   <td className="px-4 py-2.5">
                     {k.consecutive_fail > 0
                       ? <span className="text-amber-400">{k.consecutive_fail}</span>
-                      : <span className="text-gray-600">0</span>}
+                      : <span className="text-surface-muted">0</span>}
                   </td>
                   <td className="px-4 py-2.5"><StatusBadge status={k.status} /></td>
                   <td className="px-4 py-2.5">
                     <div className="flex gap-1.5">
                       <button onClick={async () => { await api.toggleKey(k.id, !k.enabled); load() }}
-                        className={`btn-ghost text-[11px] ${k.enabled ? 'text-nv-green' : 'text-gray-600'}`}>
+                        className={`btn-ghost text-[11px] ${k.enabled ? 'text-nv-green' : 'text-surface-muted'}`}>
                         {k.enabled ? '● 启用' : '○ 停用'}
                       </button>
                       <button onClick={async () => { if (confirm('确认删除？')) { await api.deleteKey(k.id); flash('已删除'); load() } }}

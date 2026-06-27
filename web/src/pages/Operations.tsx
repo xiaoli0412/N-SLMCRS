@@ -14,6 +14,8 @@ const WINDOWS = [
   { key: '24h', label: '24 小时', en: '24h' },
 ]
 
+const tipStyle = { background: '#131316', border: '1px solid #262629', borderRadius: 8, fontSize: 12 }
+
 export default function Operations() {
   const { t } = useTranslation()
   const [win, setWin] = useState('1h')
@@ -58,7 +60,7 @@ export default function Operations() {
 
       {/* 窗口切换 */}
       <div className="mb-4 flex justify-between">
-        <div className="flex gap-1.5 p-1 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+        <div className="flex gap-1.5 p-1 rounded-lg bg-surface-card-hover border border-surface-border">
           {WINDOWS.map((w) => (
             <button
               key={w.key}
@@ -88,9 +90,9 @@ export default function Operations() {
 
       {/* 请求量 + 成功率 双图 */}
       <div className="grid grid-cols-2 gap-3.5 mb-4">
-        <div className="glass-card p-5">
+        <div className="card p-5">
           <div className="text-[13px] font-semibold text-gray-200 mb-3">
-            请求量与成功趋势 <span className="text-gray-600 text-[11px] font-normal">/ Requests</span>
+            请求量与成功趋势 <span className="text-surface-muted text-[11px] font-normal">/ Requests</span>
           </div>
           <div className="h-[210px]">
             <ResponsiveContainer width="100%" height="100%">
@@ -106,8 +108,8 @@ export default function Operations() {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                <XAxis dataKey="ts" tick={{ fill: '#666', fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#666', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <XAxis dataKey="ts" tick={{ fill: '#8a8a93', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: '#8a8a93', fontSize: 10 }} axisLine={false} tickLine={false} />
                 <Tooltip contentStyle={tipStyle} />
                 <Area type="monotone" dataKey="ok" name="成功" stroke="#76b900" strokeWidth={2} fill="url(#okG)" />
                 <Area type="monotone" dataKey="err" name="失败" stroke="#f06060" strokeWidth={1.5} fill="url(#errG)" />
@@ -116,16 +118,16 @@ export default function Operations() {
           </div>
         </div>
 
-        <div className="glass-card p-5">
+        <div className="card p-5">
           <div className="text-[13px] font-semibold text-gray-200 mb-3">
-            实时吞吐 RPM <span className="text-gray-600 text-[11px] font-normal">/ Throughput</span>
+            实时吞吐 RPM <span className="text-surface-muted text-[11px] font-normal">/ Throughput</span>
           </div>
           <div className="h-[210px]">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={ts}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                <XAxis dataKey="ts" tick={{ fill: '#666', fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#666', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <XAxis dataKey="ts" tick={{ fill: '#8a8a93', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: '#8a8a93', fontSize: 10 }} axisLine={false} tickLine={false} />
                 <Tooltip contentStyle={tipStyle} />
                 <Line type="monotone" dataKey="rate" name="RPM" stroke="#76b900" strokeWidth={2.5} dot={false} />
               </LineChart>
@@ -136,16 +138,16 @@ export default function Operations() {
 
       {/* Token + 错误分类 */}
       <div className="grid grid-cols-3 gap-3.5 mb-4">
-        <div className="col-span-2 glass-card p-5">
+        <div className="col-span-2 card p-5">
           <div className="text-[13px] font-semibold text-gray-200 mb-3">
-            Token 消耗趋势 <span className="text-gray-600 text-[11px] font-normal">/ Token Usage</span>
+            Token 消耗趋势 <span className="text-surface-muted text-[11px] font-normal">/ Token Usage</span>
           </div>
           <div className="h-[170px]">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={ts}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                <XAxis dataKey="ts" tick={{ fill: '#666', fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#666', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <XAxis dataKey="ts" tick={{ fill: '#8a8a93', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: '#8a8a93', fontSize: 10 }} axisLine={false} tickLine={false} />
                 <Tooltip contentStyle={tipStyle} />
                 <Bar dataKey="tokens" name="Tokens" radius={[3, 3, 0, 0]}>
                   {ts.map((_, i) => <Cell key={i} fill="#76b900" fillOpacity={0.5 + (i % 5) * 0.1} />)}
@@ -155,8 +157,8 @@ export default function Operations() {
           </div>
         </div>
 
-        <div className="glass-card p-5">
-          <div className="text-[13px] font-semibold text-gray-200 mb-3">错误分类 <span className="text-gray-600 text-[11px] font-normal">/ Breakdown</span></div>
+        <div className="card p-5">
+          <div className="text-[13px] font-semibold text-gray-200 mb-3">错误分类 <span className="text-surface-muted text-[11px] font-normal">/ Breakdown</span></div>
           <div className="space-y-3 pt-1">
             <MiniStat label="成功 Success" value={m.SuccessRequests} color="#76b900" />
             <MiniStat label="业务错误 Error" value={m.ErrorRequests} color="#f06060" />
@@ -167,15 +169,15 @@ export default function Operations() {
       </div>
 
       {/* 密钥健康表 */}
-      <div className="glass-card p-5">
+      <div className="card p-5">
         <div className="text-[13px] font-semibold text-gray-200 mb-3">
-          上游密钥健康度 <span className="text-gray-600 text-[11px] font-normal">/ Key Health</span>
+          上游密钥健康度 <span className="text-surface-muted text-[11px] font-normal">/ Key Health</span>
         </div>
         {health.length === 0 ? <EmptyState text="暂无密钥健康数据，发起请求后将自动采集" /> : (
           <div className="overflow-x-auto">
             <table className="w-full text-[12.5px]">
               <thead>
-                <tr className="text-gray-500 text-[10.5px] uppercase tracking-wider border-b border-white/[0.04]">
+                <tr className="text-surface-muted text-[10.5px] uppercase tracking-wider border-b border-surface-border">
                   <th className="text-left px-3 py-2 font-semibold">密钥</th>
                   <th className="text-left px-3 py-2 font-semibold">状态</th>
                   <th className="text-right px-3 py-2 font-semibold">请求数</th>
@@ -187,7 +189,7 @@ export default function Operations() {
               </thead>
               <tbody>
                 {health.map((h: any, i: number) => (
-                  <tr key={i} className="border-b border-white/[0.03] hover:bg-white/[0.015]">
+                  <tr key={i} className="border-b border-surface-border/60 hover:bg-surface-card-hover">
                     <td className="px-3 py-2.5 font-mono text-[11.5px] text-gray-300">{h.key_mask}</td>
                     <td className="px-3 py-2.5"><StatusBadge status={h.status} /></td>
                     <td className="px-3 py-2.5 text-right text-gray-300">{h.total_requests}</td>
@@ -198,17 +200,17 @@ export default function Operations() {
                     </td>
                     <td className="px-3 py-2.5 text-right text-gray-400">{h.avg_latency_ms?.toFixed(0) || 0}ms</td>
                     <td className="px-3 py-2.5 text-right">
-                      <span className={h.consecutive_fail > 0 ? 'text-red-400' : 'text-gray-600'}>{h.consecutive_fail}</span>
+                      <span className={h.consecutive_fail > 0 ? 'text-red-400' : 'text-surface-muted'}>{h.consecutive_fail}</span>
                     </td>
                     <td className="px-3 py-2.5">
                       <div className="flex items-center gap-2">
-                        <div className="w-20 h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
+                        <div className="w-20 h-1.5 bg-surface-card-hover rounded-full overflow-hidden">
                           <div className="h-full rounded-full" style={{
                             width: `${h.success_rate}%`,
                             background: h.success_rate >= 95 ? '#76b900' : h.success_rate >= 80 ? '#f5c542' : '#f06060',
                           }} />
                         </div>
-                        <span className="text-[11px] text-gray-600">{h.ewma_rate?.toFixed(0) || 0}%</span>
+                        <span className="text-[11px] text-surface-muted">{h.ewma_rate?.toFixed(0) || 0}%</span>
                       </div>
                     </td>
                   </tr>
@@ -222,14 +224,12 @@ export default function Operations() {
   )
 }
 
-const tipStyle = { background: '#141414', border: '1px solid #2a2a2a', borderRadius: 8, fontSize: 12 }
-
 function MiniStat({ label, value, color }: { label: string; value: number; color: string }) {
   return (
     <div className="flex items-center justify-between">
       <div className="flex items-center gap-2">
         <span className="w-2 h-2 rounded-full" style={{ background: color }} />
-        <span className="text-[12px] text-gray-400">{label}</span>
+        <span className="text-[12px] text-surface-muted">{label}</span>
       </div>
       <span className="text-[15px] font-bold text-gray-200">{value}</span>
     </div>

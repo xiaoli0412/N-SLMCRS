@@ -76,15 +76,15 @@ export default function Distribution() {
         <Card className="mb-4 animate-slide-up">
           <form onSubmit={submit} className="grid grid-cols-3 gap-3">
             <div>
-              <label className="text-[11px] text-gray-500">名称 / 备注</label>
+              <label className="text-[11px] text-surface-muted">名称 / 备注</label>
               <input className="input mt-1" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="如：内网测试客户端" />
             </div>
             <div>
-              <label className="text-[11px] text-gray-500">RPM 限额（0=不限）</label>
+              <label className="text-[11px] text-surface-muted">RPM 限额（0=不限）</label>
               <input type="number" className="input mt-1" value={form.rpm_limit} onChange={(e) => setForm({ ...form, rpm_limit: +e.target.value })} />
             </div>
             <div>
-              <label className="text-[11px] text-gray-500">允许模型（逗号分隔，空=全部）</label>
+              <label className="text-[11px] text-surface-muted">允许模型（逗号分隔，空=全部）</label>
               <input className="input mt-1" value={form.allowed_models} onChange={(e) => setForm({ ...form, allowed_models: e.target.value })} placeholder="deepseek-ai/deepseek-r1,meta/llama-3.1-405b" />
             </div>
             <div className="col-span-3 flex gap-2 justify-end">
@@ -97,10 +97,10 @@ export default function Distribution() {
 
       {/* 凭证表 */}
       {loading ? <Spinner /> : creds.length === 0 ? <EmptyState text="尚未签发下游凭证，点击右上角创建" /> : (
-        <div className="glass-card overflow-hidden mb-5">
+        <div className="card overflow-hidden mb-5">
           <table className="w-full text-[13px]">
             <thead>
-              <tr className="bg-white/[0.02] text-gray-500 text-[11px] uppercase tracking-wider">
+              <tr className="bg-surface-card-hover text-surface-muted text-[11px] uppercase tracking-wider">
                 <th className="text-left px-4 py-2.5 font-semibold">凭证</th>
                 <th className="text-left px-4 py-2.5 font-semibold">名称</th>
                 <th className="text-left px-4 py-2.5 font-semibold">RPM 限额</th>
@@ -112,7 +112,7 @@ export default function Distribution() {
             </thead>
             <tbody>
               {creds.map((c) => (
-                <tr key={c.id} className="border-t border-white/[0.04] hover:bg-white/[0.015]">
+                <tr key={c.id} className="border-t border-surface-border/60 hover:bg-surface-card-hover">
                   <td className="px-4 py-2.5">
                     <div className="flex items-center gap-2">
                       <code className="font-mono text-[12px] text-gray-300">{c.credential_mask}</code>
@@ -120,7 +120,7 @@ export default function Distribution() {
                   </td>
                   <td className="px-4 py-2.5 text-gray-400">{c.name || '—'}</td>
                   <td className="px-4 py-2.5 text-gray-400">{c.rpm_limit || '不限'}</td>
-                  <td className="px-4 py-2.5 text-gray-500 text-[11px] max-w-[200px] truncate">{c.allowed_models || '全部'}</td>
+                  <td className="px-4 py-2.5 text-surface-muted text-[11px] max-w-[200px] truncate">{c.allowed_models || '全部'}</td>
                   <td className="px-4 py-2.5 text-right text-gray-300">{c.total_requests}</td>
                   <td className="px-4 py-2.5">
                     <StatusBadge status={c.enabled ? 'active' : 'disabled'} />
@@ -139,28 +139,28 @@ export default function Distribution() {
       )}
 
       {/* 集成钩子 */}
-      <div className="glass-card p-5">
+      <div className="card p-5">
         <div className="flex items-center justify-between mb-3">
           <div className="text-[13px] font-semibold text-gray-200">
-            集成钩子 <span className="text-gray-600 text-[11px] font-normal">/ Integration Hooks</span>
+            集成钩子 <span className="text-surface-muted text-[11px] font-normal">/ Integration Hooks</span>
           </div>
-          <span className="text-[10px] text-gray-600">未来扩展 · 部分已内置</span>
+          <span className="text-[10px] text-surface-muted">未来扩展 · 部分已内置</span>
         </div>
         <div className="grid grid-cols-2 gap-3">
           {HOOKS.map((h) => (
-            <div key={h.id} className="p-3.5 rounded-xl border border-white/[0.05] bg-white/[0.015] hover:border-nv-green/20 transition-colors">
+            <div key={h.id} className="p-3.5 rounded-xl border border-surface-border bg-surface-card-hover/50 hover:border-nv-green/20 transition-colors">
               <div className="flex items-start justify-between mb-2">
                 <div>
                   <div className="text-[13px] font-semibold text-gray-200">{h.name}</div>
-                  <div className="text-[10px] text-gray-600 mt-0.5">{h.type}</div>
+                  <div className="text-[10px] text-surface-muted mt-0.5">{h.type}</div>
                 </div>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
-                  h.status === 'connected' ? 'text-nv-green bg-nv-green/10 border-nv-green/20' : 'text-gray-500 bg-white/[0.03] border-white/[0.06]'
+                  h.status === 'connected' ? 'text-nv-green bg-nv-green/10 border-nv-green/20' : 'text-surface-muted bg-surface-card-hover border-surface-border'
                 }`}>
                   {h.status === 'connected' ? '● 已接入' : '○ 待启用'}
                 </span>
               </div>
-              <div className="text-[11.5px] text-gray-500 leading-relaxed">{h.desc}</div>
+              <div className="text-[11.5px] text-surface-muted leading-relaxed">{h.desc}</div>
             </div>
           ))}
         </div>

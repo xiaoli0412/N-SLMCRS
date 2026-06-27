@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import { Languages, LogOut, Activity } from 'lucide-react'
 import { toggleLang } from '../i18n'
 import { api, getToken, setToken, clearToken } from '../api'
 
@@ -26,7 +27,6 @@ const NAV = [
 export default function Layout() {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
-  const [dark, setDark] = useState(true)
   const [token, setTok] = useState(getToken())
   const [loginErr, setLoginErr] = useState('')
   const [loginBusy, setLoginBusy] = useState(false)
@@ -36,9 +36,10 @@ export default function Layout() {
   const [pwErr, setPwErr] = useState('')
   const [pwBusy, setPwBusy] = useState(false)
 
+  // 暗色主题（v0.6 精炼暗色，暂不提供亮色——亮色需逐页迁移文本色，留待后续）
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', dark)
-  }, [dark])
+    document.documentElement.classList.add('dark')
+  }, [])
 
   // 已登录时探测是否需强制改密（防止有人带着默认 admin token 直接跳过登录）
   useEffect(() => {
@@ -58,7 +59,6 @@ export default function Layout() {
         window.location.reload()
         return
       }
-      // 需改密：保持页面，弹出改密层（保留已存 token，预填当前令牌）
       setPwForm({ current: token, next: '', confirm: '' })
     } catch (err: any) {
       setLoginErr(err?.message || '登录失败')
@@ -87,18 +87,18 @@ export default function Layout() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-nv-dark">
+    <div className="flex h-screen overflow-hidden bg-surface">
       {/* 侧栏 */}
-      <aside className="w-[210px] flex-shrink-0 border-r border-white/[0.04] bg-white/[0.015] p-2.5 overflow-y-auto">
-        <div className="px-3.5 py-3 flex items-center gap-2 font-extrabold text-[15px]">
-          <span className="w-[22px] h-[22px] flex items-center justify-center bg-gradient-to-br from-nv-green to-nv-green-dim rounded-md text-black shadow-nv-glow">⬢</span>
+      <aside className="w-[210px] flex-shrink-0 border-r border-surface-border bg-surface-card/50 p-2.5 overflow-y-auto">
+        <div className="px-3 py-3 flex items-center gap-2 font-extrabold text-[15px]">
+          <span className="w-[22px] h-[22px] flex items-center justify-center bg-nv-green rounded-md text-black">⬢</span>
           <span className="text-white">N-SLMCRS</span>
-          <span className="text-gray-600 text-[11px] font-normal px-1.5 py-0.5 rounded bg-white/[0.04] border border-white/[0.06]">v0.4.0</span>
+          <span className="text-surface-muted text-[11px] font-normal px-1.5 py-0.5 rounded bg-surface-card-hover border border-surface-border">v0.6.0</span>
         </div>
         <nav className="mt-1">
           {NAV.map((sec) => (
             <div key={sec.group} className="mt-3">
-              <div className="px-3.5 pb-1.5 text-[10px] font-semibold tracking-wider text-gray-600 uppercase">
+              <div className="px-3 pb-1.5 text-[10px] font-semibold tracking-wider text-surface-muted uppercase">
                 {t(`nav.${sec.group}`)}
               </div>
               {sec.items.map((item) => (
@@ -120,30 +120,26 @@ export default function Layout() {
       {/* 主区 */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* 顶栏 */}
-        <header className="h-13 px-6 flex items-center gap-3 border-b border-white/[0.05] bg-gradient-to-b from-nv-dark-50 to-nv-dark relative">
-          <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-nv-green/40 to-transparent" />
+        <header className="h-13 px-6 flex items-center gap-3 border-b border-surface-border bg-surface-card/50">
           <div className="flex-1" />
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white/[0.03] border border-white/[0.06] text-[12px] text-gray-400">
-            <span className="status-dot ok animate-pulse-slow" />
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-card-hover border border-surface-border text-[12px] text-gray-400">
+            <Activity className="w-3 h-3 text-nv-green" />
             {t('common.running')}
           </div>
           <button
             onClick={toggleLang}
-            className="px-2.5 py-1 rounded-md bg-white/[0.03] border border-white/[0.06] text-[12px] text-gray-400 hover:text-gray-200 hover:bg-white/[0.06] transition-colors"
+            className="btn-outline"
+            title="切换语言"
           >
-            🌐 {i18n.language === 'zh' ? '中' : 'EN'}
-          </button>
-          <button
-            onClick={() => setDark(!dark)}
-            className="px-2.5 py-1 rounded-md bg-white/[0.03] border border-white/[0.06] text-[12px] text-gray-400 hover:text-gray-200 transition-colors"
-          >
-            {dark ? '🌙' : '☀'}
+            <Languages className="w-3.5 h-3.5" />
+            {i18n.language === 'zh' ? '中' : 'EN'}
           </button>
           {getToken() ? (
             <button
               onClick={() => { clearToken(); setTok(''); setMustChange(false); navigate('/'); window.location.reload() }}
               className="btn-ghost"
             >
+              <LogOut className="w-3.5 h-3.5" />
               {t('common.logout')}
             </button>
           ) : (
@@ -155,7 +151,7 @@ export default function Layout() {
                 className="input w-44 h-7 py-1"
                 type="password"
               />
-              <button type="submit" disabled={loginBusy} className="btn-primary py-1 text-xs disabled:opacity-50">
+              <button type="submit" disabled={loginBusy} className="btn-primary py-1 text-xs">
                 {loginBusy ? '...' : t('common.login')}
               </button>
               {loginErr && <span className="text-[11px] text-red-400 ml-1">{loginErr}</span>}
@@ -164,9 +160,7 @@ export default function Layout() {
         </header>
 
         {/* 内容 */}
-        <main className="flex-1 overflow-y-auto bg-radial-gradient relative">
-          <div className="absolute top-0 right-0 w-[300px] h-[300px] pointer-events-none -translate-y-10 translate-x-10"
-            style={{ background: 'radial-gradient(circle, rgba(118,185,0,0.06), transparent 70%)' }} />
+        <main className="flex-1 overflow-y-auto bg-surface relative">
           <div className="relative p-6 max-w-[1400px] mx-auto">
             <Outlet />
           </div>
@@ -176,31 +170,31 @@ export default function Layout() {
       {/* 强制修改密码模态（首登或仍用默认 admin 时弹出，遮挡全部交互） */}
       {mustChange && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="w-[420px] glass-card p-6 animate-slide-up">
+          <div className="w-[420px] card p-6 animate-slide-up">
             <div className="flex items-center gap-2.5 mb-1">
               <span className="w-7 h-7 flex items-center justify-center rounded-md bg-amber-400/15 border border-amber-400/30 text-amber-400">⚠</span>
               <h2 className="text-[15px] font-bold text-white">{t('common.change_password')}</h2>
             </div>
-            <p className="text-[12px] text-gray-500 mb-4 leading-relaxed">{t('common.must_change_password_hint')}</p>
+            <p className="text-[12px] text-surface-muted mb-4 leading-relaxed">{t('common.must_change_password_hint')}</p>
             <form onSubmit={submitChange} className="space-y-3">
               <div>
-                <label className="text-[11px] text-gray-500">{t('common.current_password')}</label>
+                <label className="text-[11px] text-surface-muted">{t('common.current_password')}</label>
                 <input className="input mt-1" type="password" value={pwForm.current}
                   onChange={(e) => setPwForm({ ...pwForm, current: e.target.value })} required />
               </div>
               <div>
-                <label className="text-[11px] text-gray-500">{t('common.new_password')}</label>
+                <label className="text-[11px] text-surface-muted">{t('common.new_password')}</label>
                 <input className="input mt-1" type="password" value={pwForm.next}
                   onChange={(e) => { setPwForm({ ...pwForm, next: e.target.value }); setPwErr('') }} required />
-                <div className="text-[10px] text-gray-600 mt-1">≥ 6 字符，且不能为 ADMIN</div>
+                <div className="text-[10px] text-surface-muted mt-1">≥ 6 字符，且不能为 ADMIN</div>
               </div>
               <div>
-                <label className="text-[11px] text-gray-500">{t('common.confirm_password')}</label>
+                <label className="text-[11px] text-surface-muted">{t('common.confirm_password')}</label>
                 <input className="input mt-1" type="password" value={pwForm.confirm}
                   onChange={(e) => setPwForm({ ...pwForm, confirm: e.target.value })} required />
               </div>
               {pwErr && <div className="text-[12px] text-red-400">{pwErr}</div>}
-              <button type="submit" disabled={pwBusy} className="btn-primary w-full disabled:opacity-50">
+              <button type="submit" disabled={pwBusy} className="btn-primary w-full">
                 {pwBusy ? t('common.saving') : t('common.save')}
               </button>
             </form>

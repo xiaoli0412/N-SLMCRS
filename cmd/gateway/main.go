@@ -32,8 +32,9 @@ import (
 	"github.com/nslmcrs/gateway/internal/upstream"
 )
 
-// version 通过 -ldflags "-X main.version=..." 注入；默认 v0.4.0。
-var version = "v0.4.0"
+// version 通过 -ldflags "-X main.version=..." 注入（Dockerfile 默认注入 v0.6.0）；
+// go run 直跑时回退到此默认值，保持与前端 package.json 一致。
+var version = "v0.6.0"
 
 func main() {
 	// -version：打印版本后退出（供 Docker healthcheck 与运维探活使用）

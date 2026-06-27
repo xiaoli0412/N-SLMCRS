@@ -63,7 +63,7 @@ export type ModelCapability =
   | 'parsing'
 
 // ModelView 对应后端 admin.modelView（GET /api/admin/models 与 /api/admin/models/plaza 的条目）。
-// 旧版前端误读了 model_id/status/alternative/last_checked 等不存在的字段，这里对齐真实契约。
+// v0.5+ 增可用度字段：被动聚合(availability_score/avg_latency_ms/error_count) + 主动探活(probe_*)。
 export interface ModelView {
   id: string
   object: string
@@ -76,9 +76,28 @@ export interface ModelView {
   description: string
   is_active: boolean
   synced_at: number
-  // 用量统计（近 1h）
+  // 用量统计（近 1h，被动流量聚合）
   request_count: number
   success_rate: number // 0..100
+  // 可用度（被动聚合 + 主动探活，仿 new-api）
+  availability_score: number // 0..100 综合评分
+  avg_latency_ms: number
+  error_count: number
+  last_probe_ts: number
+  probe_ok: boolean
+  probe_status: string // ok|error|timeout
+  probe_latency_ms: number
+}
+
+// ProbeResult 单次模型探活结果（POST /api/admin/models/test 返回）。
+export interface ProbeResult {
+  model_id: string
+  ts: number
+  ok: boolean
+  http_status: number
+  latency_ms: number
+  status: string
+  error?: string
 }
 
 export interface ModelListResp {
@@ -143,6 +162,16 @@ export interface AutoPilotEvent {
   Applied: boolean
 }
 
+// StepTrace LLM 引擎 ReAct 推理轨迹单步（think/act/observe）。
+export interface StepTrace {
+  Step: number
+  Role: 'think' | 'act' | 'observe' | string
+  Content: string
+  ToolName?: string
+  ToolArgs?: string
+  Error?: string
+}
+
 export interface AutoPilotState {
   Mode: AutoPilotMode | string
   Engine: AutoPilotEngine | string
@@ -153,6 +182,9 @@ export interface AutoPilotState {
   Interventions: number
   PendingCount: number
   RecentEvents: AutoPilotEvent[]
+  // v0.5+ agent 化：LLM 后端模式 + 推理轨迹
+  LLMBackendMode: string // stub|gateway
+  RecentTrace?: StepTrace[]
 }
 
 export interface AutoPilotAction {
@@ -222,6 +254,14 @@ export const api = {
     return request<ModelListResp>(`/api/admin/models/plaza${suffix}`)
   },
   syncModels: () => request<{ ok: boolean }>('/api/admin/models/sync', { method: 'POST' }),
+  // 探活单个模型（可用度测试，仿 new-api）
+  testModel: (model: string) =>
+    request<ProbeResult>('/api/admin/models/test', {
+      method: 'POST',
+      body: JSON.stringify({ model }),
+    }),
+  // 探活所有 chat 模型
+  probeAllModels: () => request<{ ok: boolean }>('/api/admin/models/probe-all', { method: 'POST' }),
   // 熔断 / 调度运行时配置（GET 返回当前值；PUT 落库 + 热生效，返回更新后的 settings）
   getSettings: () => request<SchedulerSettings>('/api/admin/settings'),
   putSettings: (s: SchedulerSettings) =>

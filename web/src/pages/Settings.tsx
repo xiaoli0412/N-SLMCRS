@@ -84,18 +84,18 @@ export default function Settings() {
       <PageHeader title={t('nav.settings')} en="Settings" subtitle="熔断 / 调度运行时配置，保存后即时热生效并持久化（重启不丢失）" />
 
       {loading ? (
-        <div className="text-gray-500 text-sm py-8 text-center">加载中…</div>
+        <div className="text-surface-muted text-sm py-8 text-center">加载中…</div>
       ) : (
         <div className="flex gap-5">
           {/* 分组 Tab */}
           <div className="w-[160px] flex-shrink-0">
-            <div className="glass-card p-2">
+            <div className="card p-2">
               {groups.map((g) => (
                 <button
                   key={g}
                   onClick={() => setTab(g)}
                   className={`w-full text-left px-3 py-2 rounded-lg text-[12.5px] font-medium transition-colors ${
-                    tab === g ? 'bg-nv-green/10 text-nv-green border border-nv-green/20' : 'text-gray-400 hover:bg-white/[0.03] border border-transparent'
+                    tab === g ? 'bg-nv-green/10 text-nv-green border border-nv-green/20' : 'text-gray-400 hover:bg-surface-card-hover border border-transparent'
                   }`}
                 >
                   {g}
@@ -111,7 +111,7 @@ export default function Settings() {
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex-1">
                     <div className="text-[13px] font-semibold text-gray-200">{f.label}</div>
-                    <div className="text-[11px] text-gray-600 mt-0.5">{f.desc}</div>
+                    <div className="text-[11px] text-surface-muted mt-0.5">{f.desc}</div>
                   </div>
                   <div className="w-[120px] flex-shrink-0">
                     <input
