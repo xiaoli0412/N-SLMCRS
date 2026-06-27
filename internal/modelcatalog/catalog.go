@@ -9,6 +9,21 @@ type Meta struct {
 	Description   string
 }
 
+// Spec 模型扩展规格（v0.7 模型广场三级"参数说明"页）。
+// 与内置策展表分离，避免破坏既有 Meta 位置初始化；远程注册表同步覆盖此表。
+type Spec struct {
+	MaxTokens       int
+	PricingIn       string
+	PricingOut      string
+	License         string
+	InputModalities []string
+	ReleaseDate     string
+	CardURL         string
+}
+
+// specCatalog 内置扩展规格（可选，留空由远程注册表 SyncRegistry 补）。
+var specCatalog = map[string]Spec{}
+
 // catalog 主流模型的深度策展目录。
 //
 // 覆盖 NVIDIA 上常见的高频模型：llama 全家桶 / deepseek / qwen3 / mistral /

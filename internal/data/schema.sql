@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS models (
     capability      TEXT    DEFAULT '',               -- chat|embedding|rerank|reasoning
     description     TEXT    DEFAULT '',
     is_active       INTEGER DEFAULT 1,                -- 0=已失效/下线
+    status          TEXT    DEFAULT 'active',         -- active|gone(上游已删除)|disabled(人工下线)
+    last_seen_active_at INTEGER DEFAULT 0,            -- 最近一次同步仍存在的时刻（秒）
     synced_at       INTEGER NOT NULL                  -- 最后同步时间
 );
 
@@ -54,8 +56,34 @@ CREATE TABLE IF NOT EXISTS model_probes (
     ok             INTEGER NOT NULL,                  -- 0=失败 1=成功
     http_status    INTEGER DEFAULT 0,                 -- 上游返回的 HTTP 状态码
     latency_ms     INTEGER DEFAULT 0,                 -- 探活端到端延迟
-    status         TEXT    DEFAULT '',                -- ok|error|timeout
-    error          TEXT    DEFAULT ''                 -- 错误简述
+    status         TEXT DEFAULT '',                   -- ok|error|timeout
+    error          TEXT DEFAULT ''                    -- 错误简述
+);
+
+-- 模型探活历史（每次探活留痕，供模型详情页探活趋势图）
+CREATE TABLE IF NOT EXISTS model_probe_history (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    model          TEXT NOT NULL,
+    ts             INTEGER NOT NULL,
+    ok             INTEGER NOT NULL,
+    http_status    INTEGER DEFAULT 0,
+    latency_ms     INTEGER DEFAULT 0,
+    status         TEXT DEFAULT '',
+    error          TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_probe_history_model ON model_probe_history(model, ts);
+
+-- 模型扩展规格（来自 OpenRouter/LiteLLM 注册表，v0.7 模型广场三级"参数说明"页）
+CREATE TABLE IF NOT EXISTS model_specs (
+    model            TEXT PRIMARY KEY,             -- 模型 id
+    max_tokens       INTEGER DEFAULT 0,
+    pricing_in       TEXT DEFAULT '',
+    pricing_out      TEXT DEFAULT '',
+    license          TEXT DEFAULT '',
+    input_modalities TEXT DEFAULT '',               -- 逗号分隔
+    release_date     TEXT DEFAULT '',
+    card_url         TEXT DEFAULT '',
+    synced_at        INTEGER NOT NULL
 );
 
 -- 请求记录（时序指标来源）— 按时间查询为主，建索引

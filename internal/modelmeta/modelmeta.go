@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/nslmcrs/gateway/internal/data"
@@ -30,32 +31,52 @@ func NewStalenessChecker(store *data.Store) *StalenessChecker {
 // CheckResult 失效检测结果。
 type CheckResult struct {
 	Stale          bool
+	Gone           bool   // true=模型已从上游消失（status=gone）；false=不在目录或临时不可用
 	SuggestedModel string
 	SuggestedRate  float64
 }
 
 // Check 检查模型是否已失效。
 // stale=true 表示模型已下线或不可用，同时返回建议的替代模型。
-func (s *StalenessChecker) Check(ctx context.Context, modelID string) (stale bool, suggestedModel string, suggestedRate float64) {
+// Gone=true 进一步表示该模型曾存在但已从上游 /v1/models 消失（用于"已消失"提示）。
+func (s *StalenessChecker) Check(ctx context.Context, modelID string) CheckResult {
 	if modelID == "" {
-		return false, "", 0
+		return CheckResult{}
 	}
 	m, err := s.store.GetModel(ctx, modelID)
 	if err != nil {
 		// 查询出错，不阻塞，放行让上游决定
-		return false, "", 0
+		return CheckResult{}
 	}
 	if m == nil {
 		// 模型不在目录中：可能是从未同步过，或确实不存在
-		// 推荐 chat 类最高成功率模型
 		alt, rate, _ := s.store.SuggestBestModel(ctx, "chat")
-		return true, alt, rate
+		return CheckResult{Stale: true, Gone: false, SuggestedModel: alt, SuggestedRate: rate}
 	}
 	if !m.IsActive {
 		alt, rate, _ := s.store.SuggestBestModel(ctx, m.Capability)
-		return true, alt, rate
+		// status=gone 表示曾存在现已消失；disabled 等其它视为临时不可用
+		return CheckResult{Stale: true, Gone: m.Status == "gone", SuggestedModel: alt, SuggestedRate: rate}
 	}
-	return false, "", 0
+	return CheckResult{}
+}
+
+// StaleMessage 失效模型的中英文提示文案。
+// gone=true 用"已消失"措辞，否则用"已下线/不可用"。
+// 调用方（entry 三协议入口）据此统一构造错误体，消除历史文案不一致。
+func StaleMessage(model string, r CheckResult) (zh, en string) {
+	if r.Gone {
+		zh = fmt.Sprintf("该模型 %s 已从上游消失，不再可用。", model)
+		en = fmt.Sprintf("Model %s has been removed from the upstream and is no longer available.", model)
+	} else {
+		zh = fmt.Sprintf("该模型 %s 已下线或当前不可用。", model)
+		en = fmt.Sprintf("Model %s is offline or currently unavailable.", model)
+	}
+	if r.SuggestedModel != "" {
+		zh += fmt.Sprintf(" 建议切换至当前成功率最高的可用模型：%s（成功率 %.1f%%）。", r.SuggestedModel, r.SuggestedRate)
+		en += fmt.Sprintf(" Suggested alternative with the highest success rate: %s (%.1f%% success rate).", r.SuggestedModel, r.SuggestedRate)
+	}
+	return zh, en
 }
 
 // Syncer 模型目录同步器。
@@ -143,6 +164,35 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("写入模型目录: %w", err)
 	}
+
+	// 拉取远程注册表富化扩展规格（max_tokens/定价/许可证/模态/模型卡URL）。
+	// 失败不阻断同步——降级用内置策展表，前端 spec 字段显示"—"。
+	if specs, err := modelcatalog.SyncRegistry(ctx); err == nil && len(specs) > 0 {
+		matched := 0
+		for _, m := range models {
+			if sp, ok := specs[m.ID]; ok {
+				mods := ""
+				if len(sp.InputModalities) > 0 {
+					mods = strings.Join(sp.InputModalities, ",")
+				}
+				_ = s.store.UpsertModelSpec(ctx, data.ModelSpecRow{
+					Model:           m.ID,
+					MaxTokens:       sp.MaxTokens,
+					PricingIn:       sp.PricingIn,
+					PricingOut:      sp.PricingOut,
+					License:         sp.License,
+					InputModalities: mods,
+					ReleaseDate:     sp.ReleaseDate,
+					CardURL:         sp.CardURL,
+				})
+				matched++
+			}
+		}
+		log.Printf("[modelmeta] 注册表富化: %d/%d 模型命中扩展规格", matched, len(models))
+	} else if err != nil {
+		log.Printf("[modelmeta] 注册表富化跳过（降级内置策展表）: %v", err)
+	}
+
 	log.Printf("[modelmeta] 同步完成: %d 个模型可用", active)
 	return nil
 }

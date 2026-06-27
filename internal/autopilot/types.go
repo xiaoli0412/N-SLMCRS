@@ -52,13 +52,19 @@ type KeySnap struct {
 }
 
 // Snapshot 引擎决策所需的只读现状。
+// json 标签对齐前端契约（apSnapshot 端点直接序列化此结构）。
 type Snapshot struct {
-	Keys              []KeySnap
-	Metrics           data.Metrics           // 近 1h 聚合
-	Series            []data.TimeSeriesPoint // 近 24h 每分钟一桶（Holt-Winters 用）
-	CurrentConcurrency int
-	MaxConcurrency    int
-	DefaultConcurrency int
+	Keys                  []KeySnap              `json:"Keys"`
+	Metrics               data.Metrics           `json:"Metrics"`
+	Series                []data.TimeSeriesPoint `json:"Series"`
+	CurrentConcurrency    int                    `json:"CurrentConcurrency"`
+	MaxConcurrency        int                    `json:"MaxConcurrency"`
+	DefaultConcurrency    int                    `json:"DefaultConcurrency"`
+	// v0.7：并发档位 + key 数 + 在途感知
+	AvailableKeyCount         int    `json:"AvailableKeyCount"`
+	InflightRequests          int64  `json:"InflightRequests"`
+	ClientConcurrencyTier     Tier   `json:"-"`                              // 引擎逻辑用（int）
+	ClientConcurrencyTierName string `json:"ClientConcurrencyTier"`         // 前端展示用（字符串）
 }
 
 // ActionKind 动作类型。
@@ -119,6 +125,10 @@ type State struct {
 	// RecentTrace LLM 引擎最近一次决策的 ReAct 推理轨迹（think/act/observe 链），调试用。
 	// 非 LLM 引擎或无轨迹时为空。
 	RecentTrace []agent.StepTrace `json:"RecentTrace,omitempty"`
+	// v0.7：客户端并发档位 + key 数 + 在途（前端 AutoPilot 页展示"实时负载画像"）
+	AvailableKeyCount     int    `json:"AvailableKeyCount"`
+	InflightRequests      int64  `json:"InflightRequests"`
+	ClientConcurrencyTier string `json:"ClientConcurrencyTier"`
 }
 
 // Sanitize 返回快照中某密钥的剩余 RPM 估值（未知返回 -1）。

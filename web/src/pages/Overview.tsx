@@ -14,7 +14,7 @@ export default function Overview() {
     try {
       const [metrics, series] = await Promise.all([api.getMetrics('1h'), api.getTimeSeries('1h', 60)])
       setM(metrics)
-      setTs(series.data.map((p: any) => ({ ts: new Date(p.TS * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), count: p.Count, rate: p.Rate })))
+      setTs(series.data.map((p) => ({ ts: new Date(p.ts * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }), count: p.count, rate: p.rate })))
     } catch { /* 忽略 */ }
     setLoading(false)
   }

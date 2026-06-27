@@ -35,6 +35,14 @@ function traceIcon(role: string) {
   return <Activity className="w-3.5 h-3.5" />
 }
 
+// tierVariant 客户端并发档位 → Badge 配色（越激进越醒目）。
+function tierVariant(tier: string): 'default' | 'success' | 'warn' | 'danger' {
+  if (tier.startsWith('peak')) return 'danger'
+  if (tier.startsWith('high')) return 'warn'
+  if (tier.startsWith('mid')) return 'success'
+  return 'default'
+}
+
 export default function AutoPilot() {
   const { t } = useTranslation()
   const [state, setState] = useState<AutoPilotState | null>(null)
@@ -217,6 +225,14 @@ export default function AutoPilot() {
                   <span className="text-gray-300 font-mono">
                     {state.RuntimeConcurrency > 0 ? state.RuntimeConcurrency : `${state.DefaultConcurrency}(默认)`}
                     <span className="text-surface-muted"> / 上限 {state.MaxConcurrency}</span>
+                  </span>
+                </div>
+                {/* v0.7：实时负载画像（客户端并发档位 + 可用 key 数 + 在途） */}
+                <div className="mt-1 text-[10.5px] text-surface-muted flex justify-between">
+                  <span>负载档位</span>
+                  <span className="flex items-center gap-1.5">
+                    <Badge variant={tierVariant(state.ClientConcurrencyTier)}>{state.ClientConcurrencyTier || 'unknown'}</Badge>
+                    <span className="text-gray-400 font-mono">在途 {state.InflightRequests} · key {state.AvailableKeyCount}</span>
                   </span>
                 </div>
                 {llmMode && (

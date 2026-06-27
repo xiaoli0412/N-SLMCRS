@@ -4,6 +4,8 @@
 #   docker compose up -d
 #
 # 首次启动前：复制 .env.example 为 .env 并填入 ADMIN_TOKEN 等。
+# Rust 内核 sidecar（kernel）可选：Auto-Pilot 预测/可用度计算委托之；
+# 设 KERNEL_DISABLE=1 可禁用（网关降级回纯 Go 实现，无单点依赖）。
 
 services:
   gateway:
@@ -19,9 +21,13 @@ services:
       # 容器内固定路径（覆盖默认值）
       SQLITE_PATH: /data/nslmcrs.db
       GIN_MODE: release
+      # 指向 Rust 内核 sidecar（容器名:端口）；不可用时自动降级
+      KERNEL_URL: http://kernel:8790
     volumes:
       # SQLite 数据持久化（命名卷）
       - nslmcrs-data:/data
+    depends_on:
+      - kernel
     healthcheck:
       test: ["CMD", "/gateway", "-version"]
       # distroless 无 wget/curl，简化为进程存活检测；生产可加 sidecar
@@ -33,6 +39,29 @@ services:
       driver: json-file
       options:
         max-size: "10m"
+        max-file: "3"
+
+  # Rust 内核 sidecar：Holt-Winters 预测 + 可用度聚合（数值密集计算）。
+  # 网关不可达此服务时降级回内置 Go 实现，故 healthcheck 失败不阻断网关。
+  kernel:
+    build:
+      context: .
+      dockerfile: Dockerfile.kernel
+    image: nslmcrs/kernel:latest
+    container_name: nslmcrs-kernel
+    restart: unless-stopped
+    expose:
+      - "8790"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8790/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
         max-file: "3"
 
 volumes:

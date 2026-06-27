@@ -1,11 +1,20 @@
 package modelcatalog
 
 // EnrichedModel enrich 的返回：补齐后的模型富元数据。
+// v0.7 携带扩展规格（max_tokens / 定价 / 许可证 / 模态 / 模型卡 URL 等）。
 type EnrichedModel struct {
 	Capability    string
 	ParamCount    string
 	ContextLength int
 	Description   string
+	// 扩展规格（来自 specCatalog 或远程注册表，留空前端显示"—"）
+	MaxTokens       int
+	PricingIn       string
+	PricingOut      string
+	License         string
+	InputModalities []string
+	ReleaseDate     string
+	CardURL         string
 }
 
 // defaultDesc 按能力返回兜底描述（未策展模型）。
@@ -41,6 +50,7 @@ func defaultDesc(capability string) string {
 //
 // 该函数为纯函数，对同一输入确定性返回，可被同步器幂等调用。
 func Enrich(id string) EnrichedModel {
+	sp := specCatalog[id] // 扩展规格（可能为零值，由远程注册表运行时补）
 	if m, ok := catalog[id]; ok {
 		cap := m.Capability
 		if cap == "" {
@@ -55,10 +65,17 @@ func Enrich(id string) EnrichedModel {
 			desc = defaultDesc(cap)
 		}
 		return EnrichedModel{
-			Capability:    cap,
-			ParamCount:    param,
-			ContextLength: m.ContextLength,
-			Description:   desc,
+			Capability:       cap,
+			ParamCount:       param,
+			ContextLength:    m.ContextLength,
+			Description:      desc,
+			MaxTokens:        sp.MaxTokens,
+			PricingIn:        sp.PricingIn,
+			PricingOut:       sp.PricingOut,
+			License:          sp.License,
+			InputModalities:  sp.InputModalities,
+			ReleaseDate:      sp.ReleaseDate,
+			CardURL:          sp.CardURL,
 		}
 	}
 

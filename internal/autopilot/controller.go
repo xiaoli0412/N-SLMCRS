@@ -8,6 +8,7 @@ import (
 
 	"github.com/nslmcrs/gateway/internal/agent"
 	"github.com/nslmcrs/gateway/internal/data"
+	"github.com/nslmcrs/gateway/internal/inflight"
 	"github.com/nslmcrs/gateway/internal/ratelimit"
 )
 
@@ -68,9 +69,10 @@ func NewController(store *data.Store, health *ratelimit.HealthTracker, rl *ratel
 	rt *Runtime, healthWindow time.Duration, defaultConcurrency, maxConcurrency int, llm LLMConfig) *Controller {
 	exec := NewExecutor(store, rt)
 	backend := agent.NewHTTPBackend(llm.BaseURL, llm.APIKey, llm.Model)
+	kernel := newKernelClient() // Rust sidecar 客户端（未配置 KERNEL_DISABLE 时启用，不可达降级）
 	engines := map[EngineID]Engine{
 		EngineAdaptive: NewAdaptiveEngine(),
-		EngineForecast: NewForecastEngine(),
+		EngineForecast: NewForecastEngine(kernel),
 		EngineLLM:      NewLLMEngine(backend),
 	}
 	mode := "stub"
@@ -178,16 +180,30 @@ func (c *Controller) snapshot(ctx context.Context) (Snapshot, error) {
 		snaps = append(snaps, ks)
 	}
 
-	metrics, _ := c.store.GetMetrics(ctx, time.Hour)
-	series, _ := c.store.GetTimeSeries(ctx, 24*time.Hour, 60)
+	metrics, _ := c.store.GetMetrics(ctx, time.Hour, "")
+	series, _ := c.store.GetTimeSeries(ctx, 24*time.Hour, 60, "")
+
+	// v0.7：可用活跃 key 数 + 在途 + 档位（驱动按 key 数/并发级别实时调整）
+	availKeys := 0
+	for _, k := range snaps {
+		if k.Enabled && k.Status == "active" {
+			availKeys++
+		}
+	}
+	inflight := inflight.Get()
+	tier := ClassifyTier(inflight)
 
 	return Snapshot{
-		Keys:               snaps,
-		Metrics:            metrics,
-		Series:             series,
-		CurrentConcurrency:  c.effectiveConcurrency(),
-		MaxConcurrency:     c.maxConcurrency,
-		DefaultConcurrency: c.defaultConcurrency,
+		Keys:                  snaps,
+		Metrics:               metrics,
+		Series:                series,
+		CurrentConcurrency:    c.effectiveConcurrency(),
+		MaxConcurrency:        c.maxConcurrency,
+		DefaultConcurrency:    c.defaultConcurrency,
+		AvailableKeyCount:         availKeys,
+		InflightRequests:          inflight,
+		ClientConcurrencyTier:     tier,
+		ClientConcurrencyTierName: tier.String(),
 	}, nil
 }
 
@@ -216,20 +232,31 @@ func (c *Controller) State(ctx context.Context) State {
 	dpm, interventions, events := c.exec.Stats()
 	pending := c.exec.CountPending(ctx)
 
+	// v0.7：实时负载画像（在途 + 档位 + 可用 key 数）
+	inflightN := inflight.Get()
+	tier := ClassifyTier(inflightN)
+	availKeys := 0
+	if snap, err := c.snapshot(ctx); err == nil {
+		availKeys = snap.AvailableKeyCount
+	}
+
 	// 事件 Mode 已在 recordEvent 时按当时模式写入，无需此处事后回填
 	// （旧实现把全部历史事件重标为当前模式，会误标跨模式切换前的旧事件）。
 	rt := State{
-		Mode:               mode,
-		Engine:             engine,
-		RuntimeConcurrency: c.runtime.Concurrency(),
-		DefaultConcurrency: c.defaultConcurrency,
-		MaxConcurrency:     c.maxConcurrency,
-		DecisionsPerMin:    dpm,
-		Interventions:      interventions,
-		PendingCount:       pending,
-		RecentEvents:       events,
-		LLMBackendMode:     c.llmBackendMode,
-		RecentTrace:        trace,
+		Mode:                  mode,
+		Engine:                engine,
+		RuntimeConcurrency:    c.runtime.Concurrency(),
+		DefaultConcurrency:    c.defaultConcurrency,
+		MaxConcurrency:        c.maxConcurrency,
+		DecisionsPerMin:       dpm,
+		Interventions:         interventions,
+		PendingCount:          pending,
+		RecentEvents:          events,
+		LLMBackendMode:        c.llmBackendMode,
+		RecentTrace:           trace,
+		AvailableKeyCount:     availKeys,
+		InflightRequests:      inflightN,
+		ClientConcurrencyTier: tier.String(),
 	}
 	return rt
 }

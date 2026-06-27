@@ -24,6 +24,11 @@ func reasonForecastCooldown(predictedRPM, capacity float64, seconds int) string 
 	return fmt.Sprintf("预测RPM %.0f将超容量%.0f，预冷密钥%ds", predictedRPM, capacity, seconds)
 }
 
+// reasonTierScaleUp v0.7：按客户端并发档位 + 可用 key 数提并发的根因。
+func reasonTierScaleUp(tier Tier, availKeys, target int) string {
+	return fmt.Sprintf("客户端并发档位 %s、可用key %d，提并发→%d匹配负载", tier.String(), availKeys, target)
+}
+
 func reasonLLMStub(summary string) string {
 	return "LLM(stub)：" + summary
 }

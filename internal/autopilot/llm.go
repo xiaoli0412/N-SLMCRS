@@ -84,7 +84,12 @@ func (e *LLMEngine) stubDecide(snap Snapshot) []Action {
 	// 全局成功率过低 → 降并发
 	rate := aggregateSuccessRate(snap.Keys)
 	if rate > 0 && rate < 0.8 {
-		target := snap.DefaultConcurrency
+		// v0.7：降并发目标取档位基线与默认的较低者，避免在高档位下过度收缩
+		tierBase := tierConcurrencyByKeys(snap.ClientConcurrencyTier, snap.AvailableKeyCount, snap.MaxConcurrency)
+		target := tierBase
+		if snap.DefaultConcurrency > 0 && snap.DefaultConcurrency < target {
+			target = snap.DefaultConcurrency
+		}
 		if target <= 0 {
 			target = 3
 		}
@@ -129,12 +134,16 @@ func buildSystemPrompt(_ Snapshot) string {
 func buildUserInput(snap Snapshot) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("当前并发度: %d (默认%d/上限%d)\n", snap.CurrentConcurrency, snap.DefaultConcurrency, snap.MaxConcurrency))
+	// v0.7：客户端并发档位 + 可用 key 数 + 在途，让 LLM 据此实时调整
+	sb.WriteString(fmt.Sprintf("客户端并发档位: %s, 可用活跃key: %d, 全局在途: %d\n",
+		snap.ClientConcurrencyTier.String(), snap.AvailableKeyCount, snap.InflightRequests))
 	sb.WriteString(fmt.Sprintf("全局成功率(1h): %.1f%%, 当前RPM: %d\n", snap.Metrics.SuccessRate, snap.Metrics.CurrentRPM))
 	sb.WriteString("密钥列表:\n")
 	for _, k := range snap.Keys {
 		sb.WriteString(fmt.Sprintf("  - id=%d %s enabled=%v status=%s successRate=%.1f%% consecFail=%d\n",
 			k.ID, k.Mask, k.Enabled, k.Status, k.SuccessRate*100, k.ConsecFail))
 	}
+	sb.WriteString("\n原则：客户端并发档位越高、可用key越多，应提并发匹配负载；档位低或key少时保守。")
 	sb.WriteString("\n请给出调度决策。")
 	return sb.String()
 }

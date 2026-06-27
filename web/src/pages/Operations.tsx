@@ -4,7 +4,7 @@ import {
   LineChart, Line, AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
-import { api, Metrics } from '../api'
+import { api, Metrics, KeyHealthEntry } from '../api'
 import { PageHeader, KpiCard, Spinner, EmptyState, StatusBadge } from '../components/ui'
 
 const WINDOWS = [
@@ -21,7 +21,7 @@ export default function Operations() {
   const [win, setWin] = useState('1h')
   const [m, setM] = useState<Metrics | null>(null)
   const [ts, setTs] = useState<any[]>([])
-  const [health, setHealth] = useState<any[]>([])
+  const [health, setHealth] = useState<KeyHealthEntry[]>([])
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
@@ -32,13 +32,13 @@ export default function Operations() {
         api.getKeyHealth(win),
       ])
       setM(metrics)
-      setTs(series.data.map((p: any) => ({
-        ts: new Date(p.TS * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-        req: p.Count,
-        ok: p.OkCount,
-        err: p.Count - p.OkCount,
-        rate: Number(p.Rate.toFixed(1)),
-        tokens: p.Tokens,
+      setTs(series.data.map((p) => ({
+        ts: new Date(p.ts * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+        req: p.count,
+        ok: p.ok_count,
+        err: p.count - p.ok_count,
+        rate: Number(p.rate.toFixed(1)),
+        tokens: p.tokens,
       })))
       setHealth(kh.data || [])
     } catch { /* 忽略 */ }
@@ -188,7 +188,7 @@ export default function Operations() {
                 </tr>
               </thead>
               <tbody>
-                {health.map((h: any, i: number) => (
+                {health.map((h, i: number) => (
                   <tr key={i} className="border-b border-surface-border/60 hover:bg-surface-card-hover">
                     <td className="px-3 py-2.5 font-mono text-[11.5px] text-gray-300">{h.key_mask}</td>
                     <td className="px-3 py-2.5"><StatusBadge status={h.status} /></td>

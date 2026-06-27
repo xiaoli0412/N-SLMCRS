@@ -6,21 +6,23 @@
   <img alt="Go" src="https://img.shields.io/badge/Go-1.25-76b900?logo=go&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-pure--Go-003b57?logo=sqlite&logoColor=white">
-  <img alt="License" src="https://img.shields.io/badge/status-v0.6.0-76b900">
-  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.6.0-76b900?logo=github&logoColor=white"></a>
+  <img alt="License" src="https://img.shields.io/badge/status-v0.7.0-76b900">
+  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.7.0-76b900?logo=github&logoColor=white"></a>
 </p>
 
-> 📦 **最新发布 [v0.6.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.6.0)** — UI 换风 shadcn · 模型广场可用度 · Auto-Pilot agent 化 · 真实环境验证。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
+> 📦 **最新发布 [v0.7.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.7.0)** — Rust 内核 sidecar · 并发档位感知(5/10/50/100) · 模型二/三级详情 · 设计系统重构。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
 
 ---
 
-## 🆕 v0.6.0 亮点
+## 🆕 v0.7.0 亮点
 
-- 🎨 **shadcn 风扁平暗色主题**：CVA `Button`/`Badge` 原语 + Tailwind `surface` 色板，全站 8 模块统一观感，Vite 实时构建嵌入 Go 二进制
-- 📊 **模型广场双路可用度（仿 new-api）**：每模型被动聚合评分（availability_score / avg_latency / 错误数）+ 主动探活（probe_ok / 延迟），单模型 Test 与一键 Probe-All
-- 🧠 **Auto-Pilot agent 化**：LLM 引擎 ReAct 循环（think→act→observe）+ function-calling 调度工具 + 可调试推理轨迹 + `LLMBackendMode`（stub/gateway）徽标
-- 🔌 **熔断半开探测自愈** + 流式响应健康记录补全
-- 🐳 **Docker 部署就绪**：`ARG VERSION` 经 ldflags 注入（`/health` 与 `-version` 一致），支持 `latest` + `v0.6.0` 双标签构建
+- 🦀 **Rust 内核 sidecar（nslmcrs-kernel）**：Holt-Winters 预测 + 可用度聚合剥离为独立 Rust 微服务（axum，:8790），Go 主干经 HTTP/JSON 调用；**不可达时自动降级回内置 Go 实现，无单点依赖**。保留 distroless 单二进制主干优势，Rust 仅承担 CPU 密集数值计算。
+- 🎚️ **Auto-Pilot 并发档位感知**：入口层全局在途请求 gauge 实时归档（low≈5 / mid≈10 / high≈50 / peak≈100），结合可用活跃 key 数动态推荐并发度基线（每路 key 在重载/峰值压 2~4 并发），零配置、全自动。
+- 🎛️ **模型二/三级详情页**：`/models/:id` 概览（四宫格 KPI + 元数据）/ 健康（时序+按 key 健康表）/ 探活（延迟趋势）/ 参数说明（开放仓库富化规格），吸收原 Operations 的模型维度指标。
+- 📚 **注册表富化**：周期同步 OpenRouter 模型注册表，落库 `model_specs` 表补齐 max_tokens / 定价 / 许可证 / 输入模态 / 发布日期；内置策展表兜底。
+- 🪦 **模型已消失契约修复**：`/v1/models` 与管理端区分已下线 vs 已从上游消失，详情端点 + 删除保护。
+- 🎨 **UI 设计系统重构**：动效（slide-up / fade-in / 骨架屏）、Tailwind 色板扩展、组件原语补齐（Tabs/Progress/KpiCard/Skeleton）。
+- 🐳 **Docker compose 含 kernel**：`docker compose up -d --build` 同时拉起 gateway + kernel 两个服务。
 
 ---
 
@@ -59,8 +61,14 @@
 │  RateLimit  每 Key 令牌桶 40RPM│  │  Auto-Pilot  三模式×三引擎决策   │
 │             X-RateLimit 校准   │  │  Controller→Executor→Runtime   │
 └───────────┬──────────────────┘  │  LLM 引擎 ReAct agent 循环      │
+            │                     │  并发档位感知(5/10/50/100)      │
             │                     └─────────────┬──────────────────┘
-┌───────────▼───────────────────────────────────▼──────────────────┐
+            │                                   │ HTTP/JSON（降级回 Go）
+            │                     ┌─────────────▼──────────────────┐
+            │                     │  nslmcrs-kernel (Rust sidecar)  │
+            │                     │  Holt-Winters 预测 · 可用度聚合  │
+            │                     └────────────────────────────────┘
+┌───────────▼───────────────────────────────────────────────────────┐
 │  Upstream   integrate.api.nvidia.com (Chat)  ai.api.nvidia.com    │
 │             (Embedding/Rerank)  + SSE 流式                         │
 └───────────────────────────┬─────────────────────────────────────┘
@@ -86,15 +94,18 @@
 cp .env.example .env
 # 编辑 .env：填入 ADMIN_TOKEN 和 NVIDIA_TEST_KEY
 
-# 2. 构建并启动（默认注入 v0.6.0 版本号）
+# 2. 构建并启动（同时拉起 gateway + kernel，默认注入 v0.7.0 版本号）
 docker compose up -d --build
 
 # 3. 访问
 #    面板: http://localhost:8787
 #    健康: curl http://localhost:8787/health
+#    内核: curl http://localhost:8790/healthz
 ```
 
-双标签构建：`docker build -t nslmcrs/gateway:latest -t nslmcrs/gateway:v0.6.0 .`
+双标签构建：
+- 网关：`docker build -t nslmcrs/gateway:latest -t nslmcrs/gateway:v0.7.0 .`
+- 内核：`docker build -f Dockerfile.kernel -t nslmcrs/kernel:latest -t nslmcrs/kernel:v0.7.0 .`
 
 数据持久化在 Docker 命名卷 `nslmcrs-data` 中。
 
@@ -208,6 +219,13 @@ curl http://localhost:8787/v1/chat/completions \
 | `LLM_API_KEY` | 下游凭证 `sk-nv-xxx`（需先在面板签发） |
 | `LLM_MODEL` | 目标模型，如 `meta/llama-3.1-8b-instruct` |
 
+**Rust 内核 sidecar（可选）**——默认指向 `http://127.0.0.1:8790`，不配置或不可达时 Auto-Pilot 自动降级回内置 Go 预测/可用度实现（功能不缺，仅数值计算走 Go）：
+
+| 变量 | 说明 |
+|------|------|
+| `KERNEL_URL` | Rust sidecar 地址（默认 `http://127.0.0.1:8790`，docker compose 已自动注入） |
+| `KERNEL_DISABLE` | 设为 `1` 强制禁用 sidecar，纯 Go 运行 |
+
 运行时熔断/调度配置可通过管理面板「系统设置」修改，**保存即热生效并持久化**到 `settings` 表（重启不丢失）。
 
 ---
@@ -262,22 +280,26 @@ curl http://localhost:8787/api/admin/autopilot/state -H "X-Admin-Token: $ADMIN_T
 │   ├── data/               # SQLite (modernc.org/sqlite, 纯 Go) schema + CRUD
 │   │   └── schema.sql      # upstream_keys / downstream_credentials / models /
 │   │                       # request_logs / key_health / model_health_stats /
-│   │                       # settings / autopilot_pending / logs
+│   │                       # model_specs / settings / autopilot_pending / logs
 │   ├── ratelimit/          # 令牌桶 + 滑动窗口健康追踪
 │   ├── upstream/           # NVIDIA HTTP 客户端 + SSE 解析
 │   ├── scheduler/          # N 路并发 + 健康加权 + 熔断半开探测
-│   ├── entry/              # HTTP 入口（多协议翻译 + 鉴权 + 嵌入前端）
+│   ├── entry/              # HTTP 入口（多协议翻译 + 鉴权 + 嵌入前端 + 在途计数）
+│   ├── inflight/           # 全局在途请求 gauge（并发档位感知，原子计数）
 │   ├── modelmeta/          # 失效检测 + 24h 同步器 + 主动探活器 Prober
-│   ├── modelcatalog/       # 模型能力分类（chat/reasoning/embedding/...）
+│   ├── modelcatalog/       # 模型能力分类 + 注册表富化（OpenRouter 同步）
 │   ├── protocol/           # Claude / Gemini 协议翻译
-│   ├── autopilot/          # Auto-Pilot：Runtime + Controller + LLM agent
+│   ├── autopilot/          # Auto-Pilot：Runtime + Controller + LLM agent + Tier 档位 + kernel_client
 │   └── admin/              # 管理 API（/api/admin/*）
+├── kernel-rs/              # Rust 内核 sidecar（nslmcrs-kernel，axum :8790）
+│   └── src/main.rs         # Holt-Winters 预测 + 可用度聚合
 ├── web/                   # React + TS + Vite + Tailwind（shadcn 风）前端
-│   └── src/pages/         # 8 模块：概览/运维/日志/模型/密钥/分发/调度/设置
+│   └── src/pages/         # 9 模块：概览/运维/日志/模型/模型详情/密钥/分发/调度/设置
 ├── deploy/                # systemd unit + 裸机安装脚本
 ├── scripts/               # 模型同步触发 + 并发负载测试
 ├── Dockerfile             # 多阶段构建（Node → Go → distroless）
-├── docker-compose.yml
+├── Dockerfile.kernel      # Rust 内核多阶段构建（rust:alpine → alpine）
+├── docker-compose.yml     # gateway + kernel 双服务编排
 └── docs/specs/            # 设计文档
 ```
 
@@ -316,6 +338,13 @@ curl http://localhost:8787/api/admin/autopilot/state -H "X-Admin-Token: $ADMIN_T
 - 📈 Models 可用度评分卡 + Test 按钮；AutoPilot snapshot + 推理轨迹 + LLMBackendMode 徽标
 - 🔄 全站页面主题统一迁移，Vite 实时构建嵌入 Go 二进制
 
+**v0.7** — Rust 内核 + 并发档位感知 + 模型详情 ✅
+- 🦀 Rust 内核 sidecar（nslmcrs-kernel）：Holt-Winters 预测 + 可用度聚合剥离，不可达自动降级回 Go
+- 🎚️ Auto-Pilot 并发档位感知（low/mid/high/peak ≈ 5/10/50/100）+ 可用 key 数动态并发度
+- 🎛️ 模型二/三级详情页（概览/健康/探活/参数说明），吸收 Operations 模型维度指标
+- 📚 注册表富化（OpenRouter 同步落 model_specs）+ 模型已消失契约修复
+- 🎨 UI 设计系统重构（动效 + 骨架屏 + 组件原语补齐）
+
 **后续** — 生态集成
 - new-api / OCTOPUS / Webhook 集成钩子落地
 - 内置 Chat 测试台（仿 NVIDIA Studio）
@@ -334,4 +363,4 @@ curl http://localhost:8787/api/admin/autopilot/state -H "X-Admin-Token: $ADMIN_T
 
 ## 📄 许可
 
-私有项目 · N-SLMCRS · v0.6.0
+私有项目 · N-SLMCRS · v0.7.0

@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { RefreshCw, FlaskConical, Search, Zap } from 'lucide-react'
 import { toast } from 'sonner'
@@ -65,6 +66,7 @@ function availMeta(score: number): { variant: 'success' | 'warn' | 'danger' | 'd
 
 export default function Models() {
   const { t } = useTranslation()
+  const nav = useNavigate()
   const [models, setModels] = useState<ModelView[]>([])
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -72,7 +74,7 @@ export default function Models() {
   const [testingId, setTestingId] = useState<string | null>(null)
   const [q, setQ] = useState('')
   const [cap, setCap] = useState('')
-  const [activeOnly, setActiveOnly] = useState(true)
+  const [activeOnly, setActiveOnly] = useState(false)
   const [lastSync, setLastSync] = useState(0)
 
   const load = async () => {
@@ -190,14 +192,16 @@ export default function Models() {
         <EmptyState text={models.length === 0 ? '尚未同步模型，点击右上角立即同步' : '未匹配到模型'} />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {filtered.map((m) => {
+          {filtered.map((m, i) => {
             const cm = capMeta(m.capability)
             const stale = !m.is_active
             const rate = m.success_rate || 0
             const av = availMeta(m.availability_score || 0)
             const probing = m.last_probe_ts > 0
             return (
-              <div key={m.id} className={`card p-4 flex flex-col transition-colors hover:border-surface-border-hover ${stale ? 'opacity-60' : ''}`}>
+              <div key={m.id} onClick={() => nav(`/models/${m.id}`)}
+                className={`card p-4 flex flex-col transition-all duration-200 hover:border-surface-border-hover hover:shadow-card-hover hover:-translate-y-0.5 cursor-pointer animate-slide-up ${stale ? 'opacity-60' : ''}`}
+                style={{ animationDelay: `${Math.min(i * 30, 300)}ms` }}>
                 <div className="flex items-start justify-between mb-2 gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="w-7 h-7 rounded-md flex items-center justify-center text-[12px] bg-surface-card-hover shrink-0">
@@ -207,11 +211,14 @@ export default function Models() {
                       <div className="text-[12.5px] font-semibold text-gray-200 font-mono leading-tight truncate" title={m.id}>
                         {m.id}
                       </div>
-                      <div className="text-[10px] text-surface-muted truncate">{m.owned_by || '—'}</div>
+                      <div className="text-[10px] text-surface-muted truncate">
+                        {m.owned_by || '—'}
+                        {m.status === 'gone' && <span className="text-amber-400/80"> · 已消失</span>}
+                      </div>
                     </div>
                   </div>
-                  <Badge variant={cm.variant} className="shrink-0">
-                    <span>{cm.icon}</span>{cm.label}
+                  <Badge variant={m.status === 'gone' ? 'warn' : cm.variant} className="shrink-0">
+                    <span>{cm.icon}</span>{m.status === 'gone' ? '已消失' : cm.label}
                   </Badge>
                 </div>
 
@@ -271,7 +278,7 @@ export default function Models() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => testOne(m.id)}
+                    onClick={(e) => { e.stopPropagation(); testOne(m.id) }}
                     disabled={testingId === m.id || stale}
                   >
                     <FlaskConical className="w-3.5 h-3.5" />

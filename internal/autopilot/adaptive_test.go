@@ -134,7 +134,7 @@ func TestAdaptiveEngine_RepeatedDecideStable(t *testing.T) {
 
 // TestForecastEngine_InsufficientDataNoAction 数据不足（<minData）应不误动。
 func TestForecastEngine_InsufficientDataNoAction(t *testing.T) {
-	e := NewForecastEngine()
+	e := NewForecastEngine(nil) // 纯 Go（无 Rust sidecar）
 	snap := makeSnap(0.99, 0, 5, 5, 10)
 	snap.Series = nil // 无时序
 	acts, err := e.Decide(context.Background(), snap)
@@ -149,7 +149,7 @@ func TestForecastEngine_InsufficientDataNoAction(t *testing.T) {
 // TestForecastEngine_HighTrafficThrottles 高流量预测逼近容量上限时，引擎应预降并发。
 // 验证两处修正：季节长度自适应（30 桶即可触发，无需 2h）+ 加法预测公式（平稳流量下不再≈0）。
 func TestForecastEngine_HighTrafficThrottles(t *testing.T) {
-	e := NewForecastEngine()
+	e := NewForecastEngine(nil) // 纯 Go（无 Rust sidecar）
 	snap := makeSnap(0.99, 0, 8, 5, 10) // 1 个启用密钥 → 容量 40 RPM
 	// 30 桶每分钟 50 请求 → 预测 50 > 容量 40 → 利用率 125% → 预降并发
 	snap.Series = make([]data.TimeSeriesPoint, 30)

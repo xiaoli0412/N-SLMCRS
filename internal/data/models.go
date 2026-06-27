@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -9,22 +10,26 @@ import (
 
 // Model 模型目录条目。
 type Model struct {
-	ID             string
-	Object         string
-	Created        int64
-	OwnedBy        string
-	Root           string
-	ParamCount     string // 增强：参数量（如 8B），Phase 2 从模型卡补充
-	ContextLength  int    // 增强：上下文长度
-	Capability     string // 增强：chat|embedding|rerank|reasoning
-	Description    string
-	IsActive       bool
-	SyncedAt       int64
+	ID                string
+	Object            string
+	Created           int64
+	OwnedBy           string
+	Root              string
+	ParamCount        string // 增强：参数量（如 8B），Phase 2 从模型卡补充
+	ContextLength     int    // 增强：上下文长度
+	Capability        string // 增强：chat|embedding|rerank|reasoning
+	Description       string
+	IsActive          bool
+	Status            string // active|gone(上游已删除)|disabled(人工下线)
+	LastSeenActiveAt  int64  // 最近一次同步仍存在的时刻（秒）
+	SyncedAt          int64
 }
 
 // UpsertModels 批量同步模型目录（来自 /v1/models）。
-// 采用「软失效」策略：先标记全部为 inactive，再把本次返回的重新激活，
-// 从而识别「上次有、本次没有」的下线模型。
+// 采用「软失效」策略：把「上次 active、本次未返回」的模型标记为 gone（已消失）
+// 并记录最后活跃时刻；再把本次返回的重新激活为 active。从而：
+//   - /v1/models 只列 active（失效模型对客户端不可见）
+//   - 模型广场仍展示 gone 模型（灰暗），客户端请求时返回"已消失"提示
 func (s *Store) UpsertModels(ctx context.Context, models []Model) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -33,16 +38,22 @@ func (s *Store) UpsertModels(ctx context.Context, models []Model) (int, error) {
 	defer tx.Rollback()
 
 	ts := now()
-	// 标记全部为失效，后续 upsert 时覆盖
-	if _, err := tx.ExecContext(ctx, `UPDATE models SET is_active=0`); err != nil {
+	// 本次同步窗口：先把所有「仍 active」的模型转为 gone（已消失），
+	// 记录 last_seen_active_at（若先前已有则保留，否则用当前 ts）。
+	// 注意：disabled（人工下线）的模型不被改写为 gone，保持人工状态。
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE models SET is_active=0,
+			status='gone',
+			last_seen_active_at=CASE WHEN last_seen_active_at>0 THEN last_seen_active_at ELSE synced_at END
+		WHERE status='active'`); err != nil {
 		return 0, err
 	}
 
 	active := 0
 	for _, m := range models {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO models (id, object, created, owned_by, root, capability, param_count, context_length, description, is_active, synced_at)
-			VALUES (?,?,?,?,?,?,?,?,?,1,?)
+			INSERT INTO models (id, object, created, owned_by, root, capability, param_count, context_length, description, is_active, status, last_seen_active_at, synced_at)
+			VALUES (?,?,?,?,?,?,?,?,?,1,'active',?,?)
 			ON CONFLICT(id) DO UPDATE SET
 				object=excluded.object,
 				created=excluded.created,
@@ -53,9 +64,11 @@ func (s *Store) UpsertModels(ctx context.Context, models []Model) (int, error) {
 				context_length=excluded.context_length,
 				description=excluded.description,
 				is_active=1,
+				status='active',
+				last_seen_active_at=excluded.last_seen_active_at,
 				synced_at=excluded.synced_at`,
 			m.ID, defaultStr(m.Object, "model"), m.Created, m.OwnedBy, m.Root,
-			defaultStr(m.Capability, "chat"), m.ParamCount, m.ContextLength, m.Description, ts)
+			defaultStr(m.Capability, "chat"), m.ParamCount, m.ContextLength, m.Description, ts, ts)
 		if err != nil {
 			return 0, fmt.Errorf("upsert 模型 %s: %w", m.ID, err)
 		}
@@ -78,9 +91,10 @@ func (s *Store) ListActiveModelsByCapability(ctx context.Context, capability str
 	return s.queryModels(ctx, `WHERE is_active=1 AND capability=? ORDER BY id`, capability)
 }
 
-// ListAllModels 列出全部模型（含已失效）。
+// ListAllModels 列出全部模型（含 gone/disabled），按状态优先级排序：
+// active 在前，gone 在后（前端据 status 灰暗 gone 模型）。
 func (s *Store) ListAllModels(ctx context.Context) ([]Model, error) {
-	return s.queryModels(ctx, `ORDER BY is_active DESC, id`)
+	return s.queryModels(ctx, `ORDER BY (status='active') DESC, id`)
 }
 
 // GetModel 按 ID 获取模型。
@@ -97,7 +111,7 @@ func (s *Store) GetModel(ctx context.Context, id string) (*Model, error) {
 
 func (s *Store) queryModels(ctx context.Context, where string, args ...any) ([]Model, error) {
 	q := fmt.Sprintf(`
-		SELECT id, object, created, owned_by, root, param_count, context_length, capability, description, is_active, synced_at
+		SELECT id, object, created, owned_by, root, param_count, context_length, capability, description, is_active, status, last_seen_active_at, synced_at
 		FROM models %s`, where)
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -108,11 +122,19 @@ func (s *Store) queryModels(ctx context.Context, where string, args ...any) ([]M
 	for rows.Next() {
 		var m Model
 		var active int
+		var status sql.NullString
+		var lastSeen sql.NullInt64
 		if err := rows.Scan(&m.ID, &m.Object, &m.Created, &m.OwnedBy, &m.Root,
-			&m.ParamCount, &m.ContextLength, &m.Capability, &m.Description, &active, &m.SyncedAt); err != nil {
+			&m.ParamCount, &m.ContextLength, &m.Capability, &m.Description, &active, &status, &lastSeen, &m.SyncedAt); err != nil {
 			return nil, err
 		}
 		m.IsActive = active == 1
+		if status.Valid {
+			m.Status = status.String
+		} else {
+			m.Status = "active" // 旧行无 status 列兜底
+		}
+		m.LastSeenActiveAt = lastSeen.Int64
 		out = append(out, m)
 	}
 	return out, rows.Err()

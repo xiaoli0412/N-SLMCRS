@@ -80,9 +80,18 @@ func (e *AdaptiveEngine) Decide(_ context.Context, snap Snapshot) ([]Action, err
 	// 映射为并发度：成功率低（u>0）→ 降并发（back-off）；成功率高（u<0）→ 提并发（scale-up）。
 	// 故取 base - u*...：u 正向时 target 低于基线，u 负向时高于基线。
 	// （旧实现 base + u*... 在 err 正向时反而升并发，与"低→降并发"语义相反，已修正。）
-	base := float64(snap.DefaultConcurrency)
+	// v0.7：并发度基线按「客户端并发档位 + 可用活跃 key 数」实时调整，而非静态默认。
+	// 低/中档保守（每路 1 并发），高档每路 2、峰值档每路 4，再由 PID 微调。
+	// 无在途数据（TierUnknown）或无可用 key 时退回 DefaultConcurrency（无从判断负载、无从压榨）。
+	var base float64
+	if snap.ClientConcurrencyTier != TierUnknown && snap.AvailableKeyCount > 0 {
+		base = float64(tierConcurrencyByKeys(snap.ClientConcurrencyTier, snap.AvailableKeyCount, snap.MaxConcurrency))
+	}
 	if base <= 0 {
-		base = 5
+		base = float64(snap.DefaultConcurrency)
+		if base <= 0 {
+			base = 5
+		}
 	}
 	target := base - u*float64(snap.MaxConcurrency)*0.5
 	// 钳位到 [1, MaxConcurrency]

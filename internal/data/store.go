@@ -50,13 +50,44 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
-// init 创建表结构。
+// init 创建表结构并执行运行时迁移（兼容旧库）。
 func (s *Store) init(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, schemaSQL)
-	if err != nil {
+	if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("初始化 schema: %w", err)
 	}
+	if err := s.migrate(ctx); err != nil {
+		return fmt.Errorf("运行时迁移: %w", err)
+	}
 	return nil
+}
+
+// migrate 对已存在的旧库补列。SQLite 不支持 ADD COLUMN IF NOT EXISTS，
+// 故用 pragma_table_info 探测后 ALTER，保证向前兼容（v0.6 及更早库升级不报错）。
+// 新增列一律允许 NULL/DEFAULT，不破坏旧行。
+func (s *Store) migrate(ctx context.Context) error {
+	// models 表：status（active|gone|disabled）+ last_seen_active_at
+	if err := s.addColumnIfMissing(ctx, "models", "status", "TEXT DEFAULT 'active'"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "models", "last_seen_active_at", "INTEGER DEFAULT 0"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// addColumnIfMissing 若表已有该列则跳过，否则 ALTER TABLE ADD COLUMN。
+func (s *Store) addColumnIfMissing(ctx context.Context, table, column, decl string) error {
+	var name string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT name FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&name)
+	if err == nil {
+		return nil // 列已存在
+	}
+	if err != sql.ErrNoRows {
+		return fmt.Errorf("探测列 %s.%s: %w", table, column, err)
+	}
+	_, err = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, decl))
+	return err
 }
 
 // Close 关闭数据库。

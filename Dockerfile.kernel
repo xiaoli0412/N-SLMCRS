@@ -1,0 +1,29 @@
+# N-SLMCRS Rust 内核 sidecar 多阶段构建（v0.7）。
+#
+# 把数值计算密集的 Holt-Winters 预测 + 可用度聚合编译为静态 Rust 二进制，
+# 作为独立容器运行；Go 网关经 HTTP/JSON 调用，不可达时降级回内置 Go 实现。
+#
+# 用法：
+#   docker build -f Dockerfile.kernel -t nslmcrs/kernel:latest -t nslmcrs/kernel:v0.7.0 .
+
+# ───────────────── 阶段一：Rust 构建 ─────────────────
+FROM rust:1.83-alpine AS builder
+WORKDIR /src
+
+# 先拷 Cargo.toml 利用层缓存（依赖编译一次）
+COPY kernel-rs/Cargo.toml kernel-rs/Cargo.lock* ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release || true
+
+# 再拷真实源码并构建
+COPY kernel-rs/src ./src
+RUN touch src/main.rs && cargo build --release
+
+# ───────────────── 阶段二：运行时 ─────────────────
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tini
+WORKDIR /
+COPY --from=builder /src/target/release/nslmcrs-kernel /kernel
+
+EXPOSE 8790
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["/kernel"]

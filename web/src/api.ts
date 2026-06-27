@@ -75,6 +75,8 @@ export interface ModelView {
   context_length: number
   description: string
   is_active: boolean
+  status: 'active' | 'gone' | 'disabled' | string
+  last_seen_active_at: number
   synced_at: number
   // 用量统计（近 1h，被动流量聚合）
   request_count: number
@@ -87,6 +89,14 @@ export interface ModelView {
   probe_ok: boolean
   probe_status: string // ok|error|timeout
   probe_latency_ms: number
+  // 扩展规格（v0.7 模型广场三级"参数说明"页，来自远程注册表）
+  max_tokens: number
+  pricing_in: string
+  pricing_out: string
+  license: string
+  input_modalities: string[]
+  release_date: string
+  card_url: string
 }
 
 // ProbeResult 单次模型探活结果（POST /api/admin/models/test 返回）。
@@ -140,6 +150,26 @@ export interface Metrics {
   PeakRPM: number
 }
 
+// TimeSeriesPoint 时序曲线点（对齐后端 json 标签）。
+export interface TimeSeriesPoint {
+  ts: number
+  count: number
+  ok_count: number
+  tokens: number
+  rate: number
+}
+
+// KeyHealthEntry 单个上游密钥健康摘要（对齐后端 json 标签）。
+export interface KeyHealthEntry {
+  key_mask: string
+  status: string
+  total_requests: number
+  success_rate: number
+  avg_latency_ms: number
+  consecutive_fail: number
+  ewma_rate: number
+}
+
 // --- Auto-Pilot ---
 
 export type AutoPilotMode = 'manual' | 'assisted' | 'fullauto'
@@ -185,6 +215,10 @@ export interface AutoPilotState {
   // v0.5+ agent 化：LLM 后端模式 + 推理轨迹
   LLMBackendMode: string // stub|gateway
   RecentTrace?: StepTrace[]
+  // v0.7：客户端并发档位 + 可用 key 数 + 在途（实时负载画像）
+  AvailableKeyCount: number
+  InflightRequests: number
+  ClientConcurrencyTier: string // low(5)|mid(10)|high(50)|peak(100)|unknown
 }
 
 export interface AutoPilotAction {
@@ -236,23 +270,48 @@ export const api = {
       body: JSON.stringify(data),
     }),
   deleteCredential: (id: number) => request(`/api/admin/credentials/${id}`, { method: 'DELETE' }),
-  // 指标
-  getMetrics: (window = '1h') => request<Metrics>(`/api/admin/metrics?window=${window}`),
-  getTimeSeries: (window = '1h', bucket = 60) =>
-    request<{ data: any[] }>(`/api/admin/timeseries?window=${window}&bucket=${bucket}`),
-  getKeyHealth: (window = '1h') =>
-    request<{ data: any[] }>(`/api/admin/key-health?window=${window}`),
+  // 指标。可选 model 过滤维度（模型详情页用）。
+  getMetrics: (window = '1h', model?: string) => {
+    const qs = new URLSearchParams({ window })
+    if (model) qs.set('model', model)
+    return request<Metrics>(`/api/admin/metrics?${qs.toString()}`)
+  },
+  getTimeSeries: (window = '1h', bucket = 60, model?: string) => {
+    const qs = new URLSearchParams({ window: String(window), bucket: String(bucket) })
+    if (model) qs.set('model', model)
+    return request<{ data: TimeSeriesPoint[] }>(`/api/admin/timeseries?${qs.toString()}`)
+  },
+  getKeyHealth: (window = '1h', model?: string) => {
+    const qs = new URLSearchParams({ window })
+    if (model) qs.set('model', model)
+    return request<{ data: KeyHealthEntry[] }>(`/api/admin/key-health?${qs.toString()}`)
+  },
   // 模型广场
   // listModels: 全部模型（含已失效），带用量统计。
   listModels: () => request<ModelListResp>('/api/admin/models'),
   // listModelsPlaza: 模型广场视图，支持 capability 过滤与仅可用过滤。
+  // listModelsPlaza: 模型广场视图。默认含全部状态（active+gone+disabled），
+  // 让 gone（已从上游消失）模型仍展示在广场（前端灰暗）；仅 active_only=true 才排除失效。
   listModelsPlaza: (params?: { capability?: string; active_only?: boolean }) => {
     const qs = new URLSearchParams()
     if (params?.capability) qs.set('capability', params.capability)
-    qs.set('active_only', params?.active_only === false ? 'false' : 'true')
+    if (params?.active_only) qs.set('active_only', 'true')
     const suffix = qs.toString() ? `?${qs.toString()}` : ''
     return request<ModelListResp>(`/api/admin/models/plaza${suffix}`)
   },
+  // 模型二级详情（聚合静态信息 + 近 1h 用量/可用度 + 最近探活）
+  // 模型 id 含 "/"，后端用查询参数 ?id= 传递完整 id
+  getModelDetail: (id: string) => request<ModelView>(`/api/admin/models/detail?id=${encodeURIComponent(id)}`),
+  // 模型三级：单模型时序（health tab）
+  getModelTimeSeries: (id: string, window = '1h', bucket = 60) =>
+    request<{ data: TimeSeriesPoint[] }>(
+      `/api/admin/models/timeseries?id=${encodeURIComponent(id)}&window=${window}&bucket=${bucket}`,
+    ),
+  // 模型三级：探活历史（probes tab）
+  getModelProbes: (id: string, limit = 100) =>
+    request<{ history: ProbeResult[]; latest: ProbeResult | null }>(
+      `/api/admin/models/probes?id=${encodeURIComponent(id)}&limit=${limit}`,
+    ),
   syncModels: () => request<{ ok: boolean }>('/api/admin/models/sync', { method: 'POST' }),
   // 探活单个模型（可用度测试，仿 new-api）
   testModel: (model: string) =>
@@ -303,8 +362,12 @@ export interface AutoPilotSnapshot {
     RPMRemaining: number
   }>
   Metrics: Metrics
-  Series: Array<{ TS: number; Count: number; Tokens: number; Rate: number }>
+  Series: TimeSeriesPoint[]
   CurrentConcurrency: number
   MaxConcurrency: number
   DefaultConcurrency: number
+  // v0.7：客户端并发档位 + 可用 key 数 + 在途
+  AvailableKeyCount: number
+  InflightRequests: number
+  ClientConcurrencyTier: string
 }

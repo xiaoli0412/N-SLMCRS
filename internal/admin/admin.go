@@ -190,6 +190,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		g.GET("/models", h.listModels)
 		g.GET("/models/plaza", h.listModelsPlaza)
+		// 模型二级/三级详情（v0.7）：模型 id 含 "/"（如 meta/llama-...），
+		// Gin 路径参数不友好，故用查询参数 ?id= 传递完整模型 id。
+		g.GET("/models/detail", h.getModelDetail)
+		g.GET("/models/timeseries", h.getModelTimeSeries)
+		g.GET("/models/probes", h.getModelProbes)
 		g.POST("/models/sync", h.syncModels)
 		g.POST("/models/test", h.testModel)
 		g.POST("/models/probe-all", h.probeAllModels)
@@ -509,7 +514,7 @@ func (h *Handler) deleteCredential(c *gin.Context) {
 
 func (h *Handler) getMetrics(c *gin.Context) {
 	window := parseWindow(c.Query("window"))
-	m, err := h.store.GetMetrics(c.Request.Context(), window)
+	m, err := h.store.GetMetrics(c.Request.Context(), window, c.Query("model"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -523,7 +528,7 @@ func (h *Handler) getTimeSeries(c *gin.Context) {
 	if bucket <= 0 {
 		bucket = 60
 	}
-	ts, err := h.store.GetTimeSeries(c.Request.Context(), window, bucket)
+	ts, err := h.store.GetTimeSeries(c.Request.Context(), window, bucket, c.Query("model"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -533,7 +538,7 @@ func (h *Handler) getTimeSeries(c *gin.Context) {
 
 func (h *Handler) getKeyHealth(c *gin.Context) {
 	window := parseWindow(c.Query("window"))
-	hl, err := h.store.GetKeyHealth(c.Request.Context(), window)
+	hl, err := h.store.GetKeyHealth(c.Request.Context(), window, c.Query("model"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -556,6 +561,8 @@ type modelView struct {
 	ContextLength int     `json:"context_length"`
 	Description   string  `json:"description"`
 	IsActive      bool    `json:"is_active"`
+	Status        string  `json:"status"`              // active|gone|disabled（前端据 gone 灰暗）
+	LastSeenActiveAt int64 `json:"last_seen_active_at"` // 最后活跃时刻
 	SyncedAt      int64   `json:"synced_at"`
 	// 用量统计（近 1h，被动流量聚合）
 	RequestCount int64   `json:"request_count"`
@@ -568,20 +575,30 @@ type modelView struct {
 	ProbeOK           bool    `json:"probe_ok"`
 	ProbeStatus       string  `json:"probe_status"` // ok|error|timeout
 	ProbeLatencyMS    int     `json:"probe_latency_ms"`
+	// 扩展规格（v0.7 模型广场三级"参数说明"页，来自远程注册表，留空前端显示"—"）
+	MaxTokens       int      `json:"max_tokens"`
+	PricingIn       string   `json:"pricing_in"`
+	PricingOut      string   `json:"pricing_out"`
+	License         string   `json:"license"`
+	InputModalities []string `json:"input_modalities"`
+	ReleaseDate     string   `json:"release_date"`
+	CardURL         string   `json:"card_url"`
 }
 
-// toModelViews 将 data.Model 列表拼装为带用量统计与探活结果的广场视图。
+// toModelViews 将 data.Model 列表拼装为带用量统计、探活结果与扩展规格的广场视图。
 func (h *Handler) toModelViews(ctx context.Context, ms []data.Model) []modelView {
 	health, _ := h.store.ModelHealthStats(ctx, time.Hour)
 	probes, _ := h.store.ListModelProbes(ctx)
+	specs, _ := h.store.ListModelSpecs(ctx)
 	views := make([]modelView, 0, len(ms))
 	for _, m := range ms {
 		u := health[m.ID]
 		pr := probes[m.ID]
-		views = append(views, modelView{
+		sp := specs[m.ID]
+		v := modelView{
 			ID: m.ID, Object: m.Object, Created: m.Created, OwnedBy: m.OwnedBy, Root: m.Root,
 			Capability: m.Capability, ParamCount: m.ParamCount, ContextLength: m.ContextLength,
-			Description: m.Description, IsActive: m.IsActive, SyncedAt: m.SyncedAt,
+			Description: m.Description, IsActive: m.IsActive, Status: m.Status, LastSeenActiveAt: m.LastSeenActiveAt, SyncedAt: m.SyncedAt,
 			RequestCount:      u.RequestCount,
 			SuccessRate:       u.SuccessRate,
 			AvailabilityScore: u.AvailabilityScore,
@@ -591,7 +608,17 @@ func (h *Handler) toModelViews(ctx context.Context, ms []data.Model) []modelView
 			ProbeOK:           pr.OK,
 			ProbeStatus:       pr.Status,
 			ProbeLatencyMS:    pr.LatencyMS,
-		})
+			MaxTokens:         sp.MaxTokens,
+			PricingIn:         sp.PricingIn,
+			PricingOut:        sp.PricingOut,
+			License:           sp.License,
+			ReleaseDate:       sp.ReleaseDate,
+			CardURL:           sp.CardURL,
+		}
+		if sp.InputModalities != "" {
+			v.InputModalities = strings.Split(sp.InputModalities, ",")
+		}
+		views = append(views, v)
 	}
 	return views
 }
@@ -616,9 +643,13 @@ func (h *Handler) listModels(c *gin.Context) {
 
 // listModelsPlaza 模型广场视图：支持 capability 过滤与仅可用过滤。
 //   GET /api/admin/models/plaza?capability=chat&active_only=true
+//
+// 默认 active_only=false：让 gone（已从上游消失）模型仍展示在广场（前端灰暗），
+// 而公开 /v1/models 仍只列 active。需求：消失模型不进客户端拉取列表，但保留在广场。
 func (h *Handler) listModelsPlaza(c *gin.Context) {
 	capability := strings.TrimSpace(c.Query("capability"))
-	activeOnly := c.DefaultQuery("active_only", "true") == "true"
+	// 默认含全部状态（active+gone+disabled）；仅显式 active_only=true 才排除失效。
+	activeOnly := c.Query("active_only") == "true"
 
 	var (
 		ms  []data.Model
@@ -698,6 +729,71 @@ func (h *Handler) probeAllModels(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// getModelDetail 单模型详情聚合（二级页）。
+//   GET /api/admin/models/detail?id=meta/llama-3.1-8b-instruct
+// 返回模型静态信息 + 近 1h 用量/可用度 + 最近探活，供详情页概览 tab。
+func (h *Handler) getModelDetail(c *gin.Context) {
+	id := c.Query("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing id"})
+		return
+	}
+	m, err := h.store.GetModel(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if m == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "model not found"})
+		return
+	}
+	views := h.toModelViews(c.Request.Context(), []data.Model{*m})
+	if len(views) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "model not found"})
+		return
+	}
+	c.JSON(http.StatusOK, views[0])
+}
+
+// getModelTimeSeries 单模型时序（三级页 health tab）。
+//   GET /api/admin/models/timeseries?id=...&window=1h&bucket=60
+func (h *Handler) getModelTimeSeries(c *gin.Context) {
+	id := c.Query("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing id"})
+		return
+	}
+	window := parseWindow(c.Query("window"))
+	bucket, _ := strconv.Atoi(c.DefaultQuery("bucket", "60"))
+	if bucket <= 0 {
+		bucket = 60
+	}
+	ts, err := h.store.GetTimeSeries(c.Request.Context(), window, bucket, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": ts})
+}
+
+// getModelProbes 单模型探活历史（三级页 probes tab）。
+//   GET /api/admin/models/probes?id=...&limit=100
+func (h *Handler) getModelProbes(c *gin.Context) {
+	id := c.Query("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing id"})
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	history, err := h.store.ListModelProbeHistory(c.Request.Context(), id, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	latest, _ := h.store.ListModelProbes(c.Request.Context())
+	c.JSON(http.StatusOK, gin.H{"history": history, "latest": latest[id]})
 }
 
 // --- 日志 ---

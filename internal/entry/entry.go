@@ -15,7 +15,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -156,12 +155,13 @@ func (h *Handler) handleChatCompletions(c *gin.Context) {
 
 	// 模型失效检测
 	if h.matcher != nil {
-		if stale, altModel, altRate := h.matcher.Check(c.Request.Context(), req.Model); stale {
-			msg := fmt.Sprintf("该模型已下线或当前不可用。建议切换至当前成功率最高的可用模型：%s（成功率 %.1f%%）。", altModel, altRate)
+		if r := h.matcher.Check(c.Request.Context(), req.Model); r.Stale {
+			zh, en := modelmeta.StaleMessage(req.Model, r)
 			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{
-				"message":         msg,
+				"message":         zh,
+				"message_en":      en,
 				"type":            "model_unavailable",
-				"suggested_model": altModel,
+				"suggested_model": r.SuggestedModel,
 			}})
 			return
 		}
@@ -394,12 +394,13 @@ func (h *Handler) handleAnthropicMessages(c *gin.Context) {
 
 	// 失效模型检测（对映射后的 NVIDIA 模型名检测）
 	if h.matcher != nil {
-		if stale, altModel, altRate := h.matcher.Check(c.Request.Context(), mappedModel); stale {
-			msg := fmt.Sprintf("该模型已下线或当前不可用。建议切换至当前成功率最高的可用模型：%s（成功率 %.1f%%）。", altModel, altRate)
+		if r := h.matcher.Check(c.Request.Context(), mappedModel); r.Stale {
+			zh, en := modelmeta.StaleMessage(mappedModel, r)
 			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{
 				"type":            "model_unavailable",
-				"message":         msg,
-				"suggested_model": altModel,
+				"message":         zh,
+				"message_en":      en,
+				"suggested_model": r.SuggestedModel,
 			}})
 			return
 		}
@@ -478,11 +479,13 @@ func (h *Handler) handleGeminiGenerate(c *gin.Context) {
 
 	// 失效模型检测
 	if h.matcher != nil {
-		if stale, altModel, altRate := h.matcher.Check(c.Request.Context(), model); stale {
+		if r := h.matcher.Check(c.Request.Context(), model); r.Stale {
+			zh, en := modelmeta.StaleMessage(model, r)
 			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{
-				"code":    404,
-				"message": fmt.Sprintf("模型 %s 不可用，建议 %s（成功率 %.1f%%）", model, altModel, altRate),
-				"status":  "NOT_FOUND",
+				"code":       404,
+				"message":    zh,
+				"message_en": en,
+				"status":     "NOT_FOUND",
 			}})
 			return
 		}

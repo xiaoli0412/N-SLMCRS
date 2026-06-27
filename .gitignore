@@ -19,6 +19,9 @@ build/
 /gateway
 /gateway.exe
 
+# Rust 内核构建产物（nslmcrs-kernel）
+/kernel-rs/target/
+
 # Env / secrets
 .env
 .env.*

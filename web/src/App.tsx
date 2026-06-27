@@ -4,6 +4,7 @@ import Overview from './pages/Overview'
 import Operations from './pages/Operations'
 import Logs from './pages/Logs'
 import Models from './pages/Models'
+import ModelDetail from './pages/ModelDetail'
 import Keys from './pages/Keys'
 import Distribution from './pages/Distribution'
 import AutoPilot from './pages/AutoPilot'
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="operations" element={<Operations />} />
         <Route path="logs" element={<Logs />} />
         <Route path="models" element={<Models />} />
+        <Route path="models/:id" element={<ModelDetail />} />
         <Route path="keys" element={<Keys />} />
         <Route path="distribution" element={<Distribution />} />
         <Route path="autopilot" element={<AutoPilot />} />

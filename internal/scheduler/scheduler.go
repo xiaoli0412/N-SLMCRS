@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/nslmcrs/gateway/internal/data"
+	"github.com/nslmcrs/gateway/internal/inflight"
 	"github.com/nslmcrs/gateway/internal/ratelimit"
 	"github.com/nslmcrs/gateway/internal/upstream"
 )
@@ -180,6 +181,8 @@ func (s *Scheduler) Dispatch(ctx context.Context, traceID, model string, request
 // DispatchCap 按能力调度非流式请求（chat/embedding/rerank 共用 N 路先到先得逻辑）。
 func (s *Scheduler) DispatchCap(ctx context.Context, cap upstream.Capability, traceID, model string, requestBody []byte) (*ScheduleResult, error) {
 	start := time.Now()
+	inflight.Inc() // 在途计数 +1，供 Auto-Pilot 档位感知
+	defer inflight.Dec()
 	keys, err := s.selectKeys(ctx, model)
 	if err != nil {
 		return nil, err
@@ -315,16 +318,24 @@ func capPath(cap upstream.Capability, model string) string {
 // DispatchStream 调度一次流式请求。返回首个响应的 response body（调用方负责 SSE 读取）。
 func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, requestBody []byte) (*ScheduleResult, error) {
 	start := time.Now()
+	inflight.Inc() // 流式在途计数 +1；调用方读完 StreamCancel 时 -1
 	keys, err := s.selectKeys(ctx, model)
 	if err != nil {
+		inflight.Dec()
 		return nil, err
 	}
 	if len(keys) == 0 {
+		inflight.Dec()
 		return nil, fmt.Errorf("无可用上游密钥")
 	}
 
 	n := min(len(keys), s.effectiveConcurrency())
 	ctx, cancel := context.WithTimeout(ctx, s.requestTimeout())
+	// 包裹 cancel：调用方关闭流时一并扣减在途计数。
+	streamCancel := func() {
+		cancel()
+		inflight.Dec()
+	}
 
 	type streamAttempt struct {
 		resp  *http.Response
@@ -390,11 +401,11 @@ func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, r
 			UpstreamKey:  key.KeyMask,
 			IsStream:     true,
 			StreamResp:   firstConnected.resp,
-			StreamCancel: cancel, // 调用方读完关闭
-		}, nil
-	}
+			StreamCancel: streamCancel, // 调用方读完关闭（内含在途 -1）
+			}, nil
+		}
 
-	cancel()
+	streamCancel()
 	return nil, fmt.Errorf("所有上游密钥流式连接均失败: %v", allErrors)
 }
 
