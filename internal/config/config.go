@@ -63,6 +63,9 @@ type LoggingConfig struct {
 	Level string
 	// Format 日志格式：json / text（默认 json）
 	Format string
+	// File 日志文件路径（v0.10）；空则仅 stdout。
+	// 建议指向 D 盘持久路径（如 D:/nslmcrs/logs/gateway.log），避免写满 C 盘系统盘。
+	File string
 }
 
 // ServerConfig HTTP 服务配置。
@@ -225,6 +228,7 @@ func Load() (*Config, error) {
 		Logging: LoggingConfig{
 			Level:  envStr("LOG_LEVEL", "info"),
 			Format: envStr("LOG_FORMAT", "json"),
+			File:   envStr("LOG_FILE", ""),
 		},
 		Hooks: HooksConfig{
 			WebhookURL:    envStr("WEBHOOK_URL", ""),

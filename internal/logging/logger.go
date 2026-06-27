@@ -28,6 +28,7 @@ import (
 type Config struct {
 	Level  slog.Level // 日志级别
 	Format string     // json | text
+	File   string     // 可选日志文件路径（v0.10；空=仅 stdout）
 }
 
 // traceIDKey context 键类型（避免与其他包冲突）。
@@ -57,32 +58,69 @@ type Logger struct {
 	store  *data.Store
 	mu     sync.Mutex
 	level  slog.Level
+	out    io.Writer  // stdout 或 stdout+file 多写
+	file   *os.File   // 可选文件 sink（nil=仅 stdout）
+	format string     // json | text（SetLevel 重建 handler 时保留）
 }
 
 // New 创建日志器。store 为 nil 时仅输出 stdout（不落库）。
+// 若 cfg.File 非空，额外写日志文件（追加模式，自动建父目录），扇出 stdout+file。
 func New(store *data.Store, cfg Config) *Logger {
 	level := cfg.Level
 	handlerOpt := &slog.HandlerOptions{Level: level}
-	var sh slog.Handler
-	w := io.Writer(os.Stdout)
-	if cfg.Format == "text" {
-		sh = slog.NewTextHandler(w, handlerOpt)
-	} else {
-		sh = slog.NewJSONHandler(w, handlerOpt)
+
+	// 输出端：stdout，可选叠加文件 sink（v0.10：日志落盘到 D 盘，避免写满 C 盘）
+	out := io.Writer(os.Stdout)
+	var f *os.File
+	if cfg.File != "" {
+		if dir := fileDir(cfg.File); dir != "" {
+			_ = os.MkdirAll(dir, 0o755)
+		}
+		if opened, err := os.OpenFile(cfg.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+			f = opened
+			out = io.MultiWriter(os.Stdout, f)
+		}
 	}
-	sl := slog.New(sh)
-	return &Logger{sl: sl, store: store, level: level}
+
+	var sh slog.Handler
+	if cfg.Format == "text" {
+		sh = slog.NewTextHandler(out, handlerOpt)
+	} else {
+		sh = slog.NewJSONHandler(out, handlerOpt)
+	}
+	return &Logger{sl: slog.New(sh), store: store, level: level, out: out, file: f, format: cfg.Format}
 }
 
-// SetLevel 运行时调整级别。
+// Close 关闭日志文件句柄（优雅关闭时调用；无文件则无操作）。
+func (l *Logger) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.file != nil {
+		return l.file.Close()
+	}
+	return nil
+}
+
+// fileDir 取路径的目录部分（跨平台：兼容 / 与 \）。
+func fileDir(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' || path[i] == '\\' {
+			return path[:i]
+		}
+	}
+	return ""
+}
+
+// SetLevel 运行时调整级别（保留原格式与输出端）。
 func (l *Logger) SetLevel(level slog.Level) {
 	l.mu.Lock()
 	l.level = level
 	handlerOpt := &slog.HandlerOptions{Level: level}
 	var sh slog.Handler
-	if l.sl.Handler() != nil {
-		// 保留原格式：若当前为 text 则继续 text
-		sh = slog.NewJSONHandler(os.Stdout, handlerOpt)
+	if l.format == "text" {
+		sh = slog.NewTextHandler(l.out, handlerOpt)
+	} else {
+		sh = slog.NewJSONHandler(l.out, handlerOpt)
 	}
 	l.sl = slog.New(sh)
 	l.mu.Unlock()

@@ -15,6 +15,7 @@ set -euo pipefail
 
 INSTALL_DIR=/opt/n-slmcrs
 DATA_DIR=${INSTALL_DIR}/data
+LOG_DIR=${INSTALL_DIR}/logs
 SERVICE_FILE=/etc/systemd/system/n-slmcrs.service
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "${SCRIPT_DIR}")"
@@ -39,7 +40,7 @@ fi
 
 # 3. 安装目录
 echo "[2/6] 创建安装目录 ${INSTALL_DIR} ..."
-mkdir -p "${DATA_DIR}"
+mkdir -p "${DATA_DIR}" "${LOG_DIR}"
 
 # 4. 构建二进制（若不存在则现场构建）
 BIN_PATH=${INSTALL_DIR}/gateway
@@ -66,6 +67,8 @@ if [ ! -f "${INSTALL_DIR}/.env" ]; then
     cp "${REPO_DIR}/.env.example" "${INSTALL_DIR}/.env"
     ADMIN_TOKEN=$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | cut -c1-24)
     sed -i "s/^ADMIN_TOKEN=.*/ADMIN_TOKEN=${ADMIN_TOKEN}/" "${INSTALL_DIR}/.env"
+    # 默认启用日志文件落盘（写到安装盘 /opt/n-slmcrs/logs，避免只靠 journal 丢失历史）
+    echo "LOG_FILE=${LOG_DIR}/gateway.log" >> "${INSTALL_DIR}/.env"
     echo "      已生成新 .env，ADMIN_TOKEN=${ADMIN_TOKEN}"
     echo "      ⚠ 请编辑 ${INSTALL_DIR}/.env 填入 NVIDIA_TEST_KEY"
   fi
@@ -90,10 +93,11 @@ if systemctl is-active --quiet n-slmcrs; then
   echo "  ✅ 安装完成，服务已启动"
   echo "================================================"
   echo "  状态:   systemctl status n-slmcrs"
-  echo "  日志:   journalctl -u n-slmcrs -f"
+  echo "  日志:   journalctl -u n-slmcrs -f  或  tail -f ${LOG_DIR}/gateway.log"
   echo "  端口:   http://localhost:8787"
   echo "  配置:   ${INSTALL_DIR}/.env"
   echo "  数据:   ${DATA_DIR}/"
+  echo "  日志文件: ${LOG_DIR}/"
   echo "================================================"
 else
   echo "[ERROR] 服务未启动成功，请查看：journalctl -u n-slmcrs -n 50"

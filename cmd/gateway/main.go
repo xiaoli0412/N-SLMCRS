@@ -68,10 +68,13 @@ func main() {
 	defer store.Close()
 
 	// 2b. 统一结构化日志（v0.9）：slog 扇出 stdout + app_logs；trace_id 经 context 注入
+	// v0.10：LOG_FILE 非空时额外落盘到文件（建议 D 盘路径），避免日志写满 C 盘系统盘
 	logger := logging.New(store, logging.Config{
 		Level:  logging.ParseLevel(cfg.Logging.Level),
 		Format: cfg.Logging.Format,
+		File:   cfg.Logging.File,
 	})
+	defer logger.Close()
 	slog.SetDefault(logger.StdLogger()) // 让第三方库的 slog 调用也走统一处理器
 
 	// 3. 限流器 + 健康追踪器
