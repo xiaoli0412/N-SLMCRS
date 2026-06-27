@@ -1,7 +1,12 @@
 # N-SLMCRS 网关 docker-compose 编排。
 #
 # 启动：
-#   docker compose up -d
+#   docker compose up -d            # 本地已 build 或服务器已 pull 时
+#   docker compose build            # 本地构建（开发用）
+#   TAG=v0.8.0 docker compose pull  # 服务器从 ghcr 拉取已发布镜像
+#
+# 生产部署（scripts/deploy.sh 自动执行）：
+#   git pull && docker compose pull && docker compose up -d
 #
 # 首次启动前：复制 .env.example 为 .env 并填入 ADMIN_TOKEN 等。
 # Rust 内核 sidecar（kernel）可选：Auto-Pilot 预测/可用度计算委托之；
@@ -10,7 +15,7 @@
 services:
   gateway:
     build: .
-    image: nslmcrs/gateway:latest
+    image: ghcr.io/xiaoli0412/n-slmcrs-gateway:${TAG:-v0.8.0}
     container_name: nslmcrs-gateway
     restart: unless-stopped
     ports:
@@ -23,6 +28,8 @@ services:
       GIN_MODE: release
       # 指向 Rust 内核 sidecar（容器名:端口）；不可用时自动降级
       KERNEL_URL: http://kernel:8790
+      # 备份目录落在持久卷上，容器重建后备份仍在
+      BACKUP_DIR: /data/backups
     volumes:
       # SQLite 数据持久化（命名卷）
       - nslmcrs-data:/data
@@ -47,7 +54,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.kernel
-    image: nslmcrs/kernel:latest
+    image: ghcr.io/xiaoli0412/n-slmcrs-kernel:${TAG:-v0.8.0}
     container_name: nslmcrs-kernel
     restart: unless-stopped
     expose:

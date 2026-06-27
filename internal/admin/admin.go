@@ -24,6 +24,10 @@
 //   GET    /api/admin/settings            读取熔断/调度运行时配置
 //   PUT    /api/admin/settings            更新熔断/调度运行时配置（落库 + 热生效）
 //   GET    /api/admin/logs               查询日志
+//   GET    /api/admin/backup             列出数据库备份
+//   POST   /api/admin/backup             立即备份（VACUUM INTO 快照）
+//   GET    /api/admin/backup/:file       下载备份文件
+//   DELETE /api/admin/backup/:file       删除备份文件
 // Phase 3 端点（Auto-Pilot）：
 //   GET    /api/admin/autopilot/state                 完整状态
 //   GET    /api/admin/autopilot/snapshot              决策快照
@@ -46,6 +50,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nslmcrs/gateway/internal/autopilot"
+	"github.com/nslmcrs/gateway/internal/backup"
 	"github.com/nslmcrs/gateway/internal/config"
 	"github.com/nslmcrs/gateway/internal/data"
 	"github.com/nslmcrs/gateway/internal/modelmeta"
@@ -65,6 +70,7 @@ type Handler struct {
 	cfg    *config.Config
 	ap     *autopilot.Controller // Auto-Pilot 总控（可选；main.go 装配后注入）
 	sched  *scheduler.Scheduler  // 调度器（可选；用于运行时改熔断/并发配置）
+	bk     *backup.Service       // 数据库备份服务（v0.8；可选）
 }
 
 // New 创建管理 API 处理器。
@@ -81,6 +87,12 @@ func (h *Handler) SetScheduler(s *scheduler.Scheduler) *Handler {
 // SetProber 注入模型探活器（启用 /api/admin/models/test 与 /models/probe-all）。
 func (h *Handler) SetProber(p *modelmeta.Prober) *Handler {
 	h.prober = p
+	return h
+}
+
+// SetBackup 注入数据库备份服务（启用 /api/admin/backup 系列）。
+func (h *Handler) SetBackup(b *backup.Service) *Handler {
+	h.bk = b
 	return h
 }
 
@@ -203,6 +215,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		g.PUT("/settings", h.putSettings)
 
 		g.GET("/logs", h.getLogs)
+
+		// 数据库备份（v0.8）
+		g.GET("/backup", h.listBackups)
+		g.POST("/backup", h.createBackup)
+		g.GET("/backup/:file", h.downloadBackup)
+		g.DELETE("/backup/:file", h.deleteBackup)
 
 		// Auto-Pilot（Phase 3）
 		g.GET("/autopilot/state", h.apState)

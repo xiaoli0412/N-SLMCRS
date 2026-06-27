@@ -4,11 +4,20 @@
 bin/
 *.exe
 
-# 本地数据库
+# 本地发布产物与前端构建输出（容器内由多阶段构建产生）
+dist/
+web/dist/
+internal/entry/dist/
+
+# Rust 内核构建产物（229MB，绝不该进上下文）
+kernel-rs/target/
+
+# 本地数据库与备份
 data/
 *.db
 *.db-wal
 *.db-shm
+data/backups/
 
 # 环境与密钥（绝不进镜像）
 .env
@@ -36,3 +45,4 @@ web/.vite/
 **/*_test.go
 **/testdata/
 tmp/
+*.log

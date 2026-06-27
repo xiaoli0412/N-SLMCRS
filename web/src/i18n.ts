@@ -18,6 +18,7 @@ i18n.use(initReactI18next).init({
           keys: '上游密钥',
           distribution: '接入分发',
           autopilot: '智能调度',
+          backup: '数据库备份',
           settings: '系统设置',
         },
         common: {
@@ -65,6 +66,7 @@ i18n.use(initReactI18next).init({
           keys: 'Upstream Keys',
           distribution: 'Distribution',
           autopilot: 'Auto-Pilot',
+          backup: 'DB Backup',
           settings: 'Settings',
         },
         common: {

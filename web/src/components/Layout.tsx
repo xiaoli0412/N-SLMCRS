@@ -20,6 +20,7 @@ const NAV = [
     { to: '/autopilot', key: 'autopilot', icon: '✦' },
   ]},
   { group: 'group_system', items: [
+    { to: '/backup', key: 'backup', icon: '💽' },
     { to: '/settings', key: 'settings', icon: '⚙' },
   ]},
 ]
@@ -93,7 +94,7 @@ export default function Layout() {
         <div className="px-3 py-3 flex items-center gap-2 font-extrabold text-[15px]">
           <span className="w-[22px] h-[22px] flex items-center justify-center bg-nv-green rounded-md text-black">⬢</span>
           <span className="text-white">N-SLMCRS</span>
-          <span className="text-surface-muted text-[11px] font-normal px-1.5 py-0.5 rounded bg-surface-card-hover border border-surface-border">v0.6.0</span>
+          <span className="text-surface-muted text-[11px] font-normal px-1.5 py-0.5 rounded bg-surface-card-hover border border-surface-border">v0.8.0</span>
         </div>
         <nav className="mt-1">
           {NAV.map((sec) => (

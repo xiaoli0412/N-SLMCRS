@@ -8,6 +8,7 @@ import ModelDetail from './pages/ModelDetail'
 import Keys from './pages/Keys'
 import Distribution from './pages/Distribution'
 import AutoPilot from './pages/AutoPilot'
+import Backup from './pages/Backup'
 import Settings from './pages/Settings'
 
 export default function App() {
@@ -22,6 +23,7 @@ export default function App() {
         <Route path="keys" element={<Keys />} />
         <Route path="distribution" element={<Distribution />} />
         <Route path="autopilot" element={<AutoPilot />} />
+        <Route path="backup" element={<Backup />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

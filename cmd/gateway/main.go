@@ -17,12 +17,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nslmcrs/gateway/internal/admin"
 	"github.com/nslmcrs/gateway/internal/autopilot"
+	"github.com/nslmcrs/gateway/internal/backup"
 	"github.com/nslmcrs/gateway/internal/config"
 	"github.com/nslmcrs/gateway/internal/data"
 	"github.com/nslmcrs/gateway/internal/entry"
@@ -32,9 +34,9 @@ import (
 	"github.com/nslmcrs/gateway/internal/upstream"
 )
 
-// version 通过 -ldflags "-X main.version=..." 注入（Dockerfile 默认注入 v0.7.0）；
+// version 通过 -ldflags "-X main.version=..." 注入（Dockerfile 默认注入 v0.8.0）；
 // go run 直跑时回退到此默认值，保持与前端 package.json 一致。
-var version = "v0.7.0"
+var version = "v0.8.0"
 
 func main() {
 	// -version：打印版本后退出（供 Docker healthcheck 与运维探活使用）
@@ -70,6 +72,9 @@ func main() {
 	if err := registerKeys(context.Background(), store, rlMgr); err != nil {
 		log.Printf("[WARN] 注册已存密钥失败: %v", err)
 	}
+	// 3b. 兑现 NVIDIA_TEST_KEY 承诺：若该 env 非空，启动时幂等注册为首个上游密钥。
+	//     （.env.example / README 早已声明此行为，此前无代码读取该 env——v0.8 补齐。）
+	seedTestKey(context.Background(), store, rlMgr)
 
 	// 4. 上游客户端
 	client := upstream.NewClient(cfg.Upstream.ChatBaseURL, cfg.Upstream.RetrievalBaseURL, cfg.Upstream.RequestTimeout)
@@ -105,10 +110,13 @@ func main() {
 	syncer := modelmeta.NewSyncer(store, client, cfg.Upstream.ModelSyncInterval)
 	// 6b. 模型探活器（主动可用度检测，仿 new-api；与 request_logs 被动统计互补）
 	prober := modelmeta.NewProber(store, client, 10*time.Minute)
+	// 6c. 数据库备份服务（v0.8）：VACUUM INTO 快照 + 定时轮转；未配置 interval 则仅手动触发
+	backupSvc := backup.New(store, cfg.Backup.Dir, cfg.Backup.Interval, cfg.Backup.Retention)
 
-	go apCtrl.Start(rootCtx) // Auto-Pilot 30s 决策循环
+	go apCtrl.Start(rootCtx) // Auto-Pilot 2 分钟决策循环
 	go syncer.Start(rootCtx) // 模型目录同步
 	go prober.Start(rootCtx) // 模型探活
+	go backupSvc.Start(rootCtx) // 数据库定时备份
 
 	// 7. 路由
 	if os.Getenv("GIN_MODE") == "" {
@@ -133,6 +141,7 @@ func main() {
 	adminHandler.SetAutopilot(apCtrl)
 	adminHandler.SetScheduler(sched)
 	adminHandler.SetProber(prober)
+	adminHandler.SetBackup(backupSvc)
 	adminHandler.RegisterRoutes(r)
 
 	// 前端静态资源 + SPA 兜底（最后注册）
@@ -181,6 +190,26 @@ func registerKeys(ctx context.Context, store *data.Store, rl *ratelimit.Manager)
 	}
 	log.Printf("[启动] 已注册 %d 个上游密钥到限流器", len(keys))
 	return nil
+}
+
+// seedTestKey 若 NVIDIA_TEST_KEY 非空，启动时幂等注册为首个上游密钥。
+// 已存在则跳过（BulkAddUpstreamKeys 对 UNIQUE 冲突视为已存在）；新增后注册到限流器。
+func seedTestKey(ctx context.Context, store *data.Store, rl *ratelimit.Manager) {
+	kv := strings.TrimSpace(os.Getenv("NVIDIA_TEST_KEY"))
+	if kv == "" {
+		return
+	}
+	res, err := store.BulkAddUpstreamKeys(ctx, []string{kv}, "NVIDIA_TEST_KEY", "", 0)
+	if err != nil {
+		log.Printf("[WARN] 注册 NVIDIA_TEST_KEY 失败: %v", err)
+		return
+	}
+	for _, id := range res.AddedIDs {
+		rl.Register(id, 0)
+	}
+	if res.Added > 0 {
+		log.Printf("[启动] 已从 NVIDIA_TEST_KEY 注册 1 个上游密钥")
+	}
 }
 
 // requestLogger 简易请求日志中间件。

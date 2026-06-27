@@ -237,6 +237,30 @@ export interface PendingEntry {
   UpdatedAt: number
 }
 
+// --- 数据库备份（v0.8）---
+
+// BackupInfo 单个备份文件元信息（对齐后端 backup.Info json 标签）。
+export interface BackupInfo {
+  name: string
+  size: number
+  mod_time: number // Unix 秒
+}
+
+// backupDownloadUrl 返回备份文件的下载 URL（供 <a> 直接触发浏览器下载）。
+// 因 admin 鉴权走 X-Admin-Token 头，直接用 <a href> 会 401；故提供 downloadBackup
+// 走 fetch（带 token 头）并把 blob 转为对象 URL。
+async function requestBlob(path: string, opts: RequestInit = {}): Promise<Blob> {
+  const headers: Record<string, string> = {}
+  const t = getToken()
+  if (t) headers['X-Admin-Token'] = t
+  const res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers as any) } })
+  if (!res.ok) {
+    const txt = await res.text().catch(() => res.statusText)
+    throw new Error(`${res.status}: ${txt}`)
+  }
+  return res.blob()
+}
+
 export const api = {
   // 鉴权 / 改密（无需常规中间件）
   authStatus: () => request<{ initialized: boolean; must_change_password: boolean }>('/api/admin/auth/status'),
@@ -348,6 +372,14 @@ export const api = {
     request('/api/admin/autopilot/pending/' + encodeURIComponent(key) + '/approve', { method: 'POST' }),
   rejectPending: (key: string) =>
     request('/api/admin/autopilot/pending/' + encodeURIComponent(key) + '/reject', { method: 'POST' }),
+  // 数据库备份（v0.8）
+  listBackups: () => request<{ data: BackupInfo[] }>('/api/admin/backup'),
+  createBackup: () => request<{ ok: boolean; name: string }>('/api/admin/backup', { method: 'POST' }),
+  deleteBackup: (file: string) =>
+    request('/api/admin/backup/' + encodeURIComponent(file), { method: 'DELETE' }),
+  // 下载走 blob（需带 X-Admin-Token 头），返回对象 URL；调用方用完应 revokeObjectURL。
+  downloadBackup: (file: string) =>
+    requestBlob('/api/admin/backup/' + encodeURIComponent(file)).then((b) => URL.createObjectURL(b)),
 }
 
 // AutoPilotSnapshot 对应后端 autopilot.Snapshot（GET /autopilot/snapshot）。

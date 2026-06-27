@@ -33,6 +33,9 @@ type Config struct {
 
 	// AutoPilot 智能调度（Auto-Pilot）配置
 	AutoPilot AutoPilotConfig
+
+	// Backup 数据库备份配置（v0.8）
+	Backup BackupConfig
 }
 
 // ServerConfig HTTP 服务配置。
@@ -106,6 +109,19 @@ func (a AutoPilotConfig) LLMConfigured() bool {
 	return a.LLMBaseURL != "" && a.LLMAPIKey != "" && a.LLMModel != ""
 }
 
+// BackupConfig 数据库备份配置（v0.8 新增）。
+//
+// 用 SQLite VACUUM INTO 产出事务一致快照（WAL 安全），按保留数轮转删最旧。
+// 调度仿 modelmeta.Syncer：后台 ticker + 可被 admin API 即时触发。
+type BackupConfig struct {
+	// Dir 备份存放目录（容器内建议挂载到持久卷，如 /data/backups）
+	Dir string
+	// Interval 自动备份间隔（默认 24h）；<=0 则禁用定时备份，仅手动
+	Interval time.Duration
+	// Retention 保留最近多少份（默认 7）；<=0 则不自动清理
+	Retention int
+}
+
 // Load 从环境变量和 .env 文件加载配置。
 func Load() (*Config, error) {
 	// .env 可选（容器/裸机可能只用环境变量）
@@ -142,6 +158,11 @@ func Load() (*Config, error) {
 			LLMBaseURL: envStr("LLM_BASE_URL", ""),
 			LLMAPIKey:  envStr("LLM_API_KEY", ""),
 			LLMModel:   envStr("LLM_MODEL", ""),
+		},
+		Backup: BackupConfig{
+			Dir:       envStr("BACKUP_DIR", "data/backups"),
+			Interval:  envDuration("BACKUP_INTERVAL", 24*time.Hour),
+			Retention: envInt("BACKUP_RETENTION", 7),
 		},
 	}
 
