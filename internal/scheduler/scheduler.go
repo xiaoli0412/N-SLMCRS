@@ -553,6 +553,7 @@ func (s *Scheduler) recordSuccess(ctx context.Context, traceID, model string, ke
 	latency := int(time.Since(start).Milliseconds())
 	tokens := extractTokens(resp.Body)
 	s.markHealthy(ctx, key)
+	s.feedbackModelCircuit(ctx, model, true) // 被动路径：成功清零连续失败
 	s.store.RecordRequest(ctx, data.RequestLog{
 		TraceID:          traceID,
 		DownstreamCred:   "",
@@ -573,6 +574,8 @@ func (s *Scheduler) recordSuccess(ctx context.Context, traceID, model string, ke
 
 // recordResult 记录请求结果（成功/失败）。
 func (s *Scheduler) recordResult(ctx context.Context, traceID, model string, key *data.UpstreamKey, upstreamMask, status string, httpStatus int, errMsg string, concurrency int) {
+	// 被动路径：成功清零，失败累加（达阈值转 open）
+	s.feedbackModelCircuit(ctx, model, status == "success")
 	s.store.RecordRequest(ctx, data.RequestLog{
 		TraceID:        traceID,
 		UpstreamKey:   upstreamMask,
@@ -582,6 +585,21 @@ func (s *Scheduler) recordResult(ctx context.Context, traceID, model string, key
 		ErrorMessage:  errMsg,
 		Concurrency:   concurrency,
 	})
+}
+
+// feedbackModelCircuit 被动反馈模型熔断状态（与 modelhealth 主动扫描互补）。
+// 成功清零连续失败并闭合临时熔断；失败累加，达阈值转 open（指数退避冷却）。
+// 永久熔断不受被动反馈影响。复用按 Key 的熔断阈值/冷却配置。
+func (s *Scheduler) feedbackModelCircuit(ctx context.Context, model string, success bool) {
+	if model == "" {
+		return
+	}
+	threshold, cooldown := s.circuitConfig()
+	if success {
+		_ = s.store.ResetModelCircuitConsecutive(ctx, model)
+	} else {
+		_ = s.store.RecordModelCircuitFailure(ctx, model, threshold, int64(cooldown.Seconds()))
+	}
 }
 
 // tokenUsage 从响应中提取 token 用量。

@@ -11,15 +11,17 @@ import (
 )
 
 // ModelSpec 远程注册表富化的模型规格（与 EnrichedModel 的 Spec 字段对齐）。
-// 用于模型广场三级"参数说明"页，作为内置策展表的补充。
+// 用于模型广场二阶面板"参数说明"，作为内置策展表的补充。
 type ModelSpec struct {
-	MaxTokens       int      `json:"max_tokens"`
-	PricingIn       string   `json:"pricing_in"`
-	PricingOut      string   `json:"pricing_out"`
-	License         string   `json:"license"`
-	InputModalities []string `json:"input_modalities"`
-	ReleaseDate     string   `json:"release_date"`
-	CardURL         string   `json:"card_url"`
+	MaxTokens           int      `json:"max_tokens"`
+	PricingIn           string   `json:"pricing_in"`
+	PricingOut          string   `json:"pricing_out"`
+	License             string   `json:"license"`
+	InputModalities     []string `json:"input_modalities"`
+	ReleaseDate         string   `json:"release_date"`
+	CardURL             string   `json:"card_url"`
+	Architecture        string   `json:"architecture"`         // v0.9：HF 富化（如 LlamaForCausalLM）
+	SupportedInterfaces []string `json:"supported_interfaces"` // v0.9：支持接口（chat/embeddings/rerank）
 }
 
 // openRouterModel OpenRouter 模型注册表条目（仅取需要的字段）。

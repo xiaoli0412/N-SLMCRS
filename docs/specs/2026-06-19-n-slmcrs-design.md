@@ -179,7 +179,7 @@
 | Logs | 日志中心 | 结构化日志、Trace ID 检索 |
 | Model Catalog | 模型目录 | 24h 同步、参数展示、失效检测+替代推荐 |
 | Upstream Keys | 上游密钥 | NVIDIA nvapi- Key 精细配置 |
-| Distribution | 接入分发 | 签发下游凭证 + new-api/OCTOPUS/Webhook 钩子 |
+| Distribution | 接入分发 | 签发下游凭证 + new-api/sapi/Webhook 钩子 |
 | Auto-Pilot | 智能调度 | 三引擎切换、三档模式、策略可视化 |
 | Settings | 系统设置 | 端口/认证/上游 URL/同步周期/协议/日志/持久化 |
 
@@ -217,7 +217,7 @@ HTTP 404
 Claude/Gemini 适配、统一翻译层、模型元数据增强、运维监控页、日志中心、响应缓存、健康探针、Webhook、⌘K、OpenAPI 文档。
 
 ### Phase 3 — 智能调度 + 集成 + 打磨
-Auto-Pilot 三引擎、new-api/OCTOPUS/Webhook 钩子、前端动效光感打磨、明暗/中英全覆盖。
+Auto-Pilot 三引擎、new-api/sapi/Webhook 钩子、前端动效光感打磨、明暗/中英全覆盖。
 
 ## 12. 安全要点
 

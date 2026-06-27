@@ -1,237 +1,93 @@
-import { useEffect, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import {
-  LineChart, Line, AreaChart, Area, BarChart, Bar,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
-} from 'recharts'
-import { api, Metrics, KeyHealthEntry } from '../api'
-import { PageHeader, KpiCard, Spinner, EmptyState, StatusBadge } from '../components/ui'
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { api } from '@/api'
+import { Card, CardHeader, CardTitle, CardContent, Button } from '@/components/ui'
+import { fmtNum, fmtPct } from '@/lib/utils'
 
-const WINDOWS = [
-  { key: '5m', label: '5 分钟', en: '5m' },
-  { key: '1h', label: '1 小时', en: '1h' },
-  { key: '6h', label: '6 小时', en: '6h' },
-  { key: '24h', label: '24 小时', en: '24h' },
-]
-
-const tipStyle = { background: '#131316', border: '1px solid #262629', borderRadius: 8, fontSize: 12 }
+const WINDOWS = ['1h', '6h', '24h', '7d'] as const
 
 export default function Operations() {
-  const { t } = useTranslation()
-  const [win, setWin] = useState('1h')
-  const [m, setM] = useState<Metrics | null>(null)
-  const [ts, setTs] = useState<any[]>([])
-  const [health, setHealth] = useState<KeyHealthEntry[]>([])
-  const [loading, setLoading] = useState(true)
-
-  const load = async () => {
-    try {
-      const [metrics, series, kh] = await Promise.all([
-        api.getMetrics(win),
-        api.getTimeSeries(win, win === '5m' ? 15 : win === '24h' ? 180 : 60),
-        api.getKeyHealth(win),
-      ])
-      setM(metrics)
-      setTs(series.data.map((p) => ({
-        ts: new Date(p.ts * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-        req: p.count,
-        ok: p.ok_count,
-        err: p.count - p.ok_count,
-        rate: Number(p.rate.toFixed(1)),
-        tokens: p.tokens,
-      })))
-      setHealth(kh.data || [])
-    } catch { /* 忽略 */ }
-    setLoading(false)
-  }
-
-  useEffect(() => {
-    setLoading(true)
-    load()
-    const id = setInterval(load, 5000)
-    return () => clearInterval(id)
-  }, [win])
-
-  if (loading || !m) return <><PageHeader title={t('nav.operations')} en="Operations" /><Spinner /></>
+  const [win, setWin] = useState<typeof WINDOWS[number]>('1h')
+  const mQ = useQuery({ queryKey: ['metrics', win], queryFn: () => api.getMetrics(win) })
+  const tsQ = useQuery({ queryKey: ['timeseries', win], queryFn: () => api.getTimeSeries(win, 60) })
+  const khQ = useQuery({ queryKey: ['key-health', win], queryFn: () => api.getKeyHealth(win) })
+  const m = mQ.data
+  const data = (tsQ.data?.data ?? []).map((p) => ({ ...p, ts: p.ts * 1000 }))
 
   return (
-    <>
-      <PageHeader title={t('nav.operations')} en="Operations" subtitle="实时成功率 / 请求量 / Token / 密钥健康度全维度监控" />
-
-      {/* 窗口切换 */}
-      <div className="mb-4 flex justify-between">
-        <div className="flex gap-1.5 p-1 rounded-lg bg-surface-card-hover border border-surface-border">
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">调度运营</h1>
+          <p className="mt-1 text-sm text-muted-foreground">流量、密钥健康与限流</p>
+        </div>
+        <div className="flex gap-1">
           {WINDOWS.map((w) => (
-            <button
-              key={w.key}
-              onClick={() => setWin(w.key)}
-              className={`px-3 py-1.5 rounded-md text-[12px] font-medium transition-all ${win === w.key
-                ? 'bg-nv-green text-black shadow-nv-glow'
-                : 'text-gray-400 hover:text-gray-200'}`}
-            >
-              {w.label}
-            </button>
+            <Button key={w} size="sm" variant={win === w ? 'default' : 'outline'} onClick={() => setWin(w)}>{w}</Button>
           ))}
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-nv-green/5 border border-nv-green/15 text-[11px] text-nv-green">
-          <span className="status-dot ok animate-pulse-slow" /> 实时刷新 · 5s
-        </div>
       </div>
 
-      {/* KPI */}
-      <div className="grid grid-cols-6 gap-3 mb-4">
-        <KpiCard label="成功率" value={m.SuccessRate.toFixed(1)} unit="%" accent trend={`${m.SuccessRequests}/${m.TotalRequests}`} trendUp />
-        <KpiCard label="总请求" value={m.TotalRequests} />
-        <KpiCard label="实时 RPM" value={m.CurrentRPM} trend={`峰值 ${m.PeakRPM || m.CurrentRPM}`} trendUp />
-        <KpiCard label="平均延迟" value={m.AvgLatencyMS.toFixed(0)} unit="ms" />
-        <KpiCard label="Token 用量" value={(m.TotalTokens / 1000000).toFixed(2)} unit="M" />
-        <KpiCard label="限流 429" value={m.RateLimited} />
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Stat label="总请求" value={m ? fmtNum(m.TotalRequests) : '—'} />
+        <Stat label="成功率" value={m ? fmtPct(m.SuccessRate) : '—'} accent="text-success" />
+        <Stat label="平均延迟" value={m ? m.AvgLatencyMS + 'ms' : '—'} />
+        <Stat label="峰值 RPM" value={m ? fmtNum(m.PeakRPM) : '—'} accent="text-primary" />
       </div>
 
-      {/* 请求量 + 成功率 双图 */}
-      <div className="grid grid-cols-2 gap-3.5 mb-4">
-        <div className="card p-5">
-          <div className="text-[13px] font-semibold text-gray-200 mb-3">
-            请求量与成功趋势 <span className="text-surface-muted text-[11px] font-normal">/ Requests</span>
-          </div>
-          <div className="h-[210px]">
+      <Card>
+        <CardHeader><CardTitle>请求时序</CardTitle></CardHeader>
+        <CardContent>
+          <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={ts}>
-                <defs>
-                  <linearGradient id="okG" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#76b900" stopOpacity={0.35} />
-                    <stop offset="100%" stopColor="#76b900" stopOpacity={0} />
-                  </linearGradient>
-                  <linearGradient id="errG" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#f06060" stopOpacity={0.25} />
-                    <stop offset="100%" stopColor="#f06060" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                <XAxis dataKey="ts" tick={{ fill: '#8a8a93', fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#8a8a93', fontSize: 10 }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={tipStyle} />
-                <Area type="monotone" dataKey="ok" name="成功" stroke="#76b900" strokeWidth={2} fill="url(#okG)" />
-                <Area type="monotone" dataKey="err" name="失败" stroke="#f06060" strokeWidth={1.5} fill="url(#errG)" />
+              <AreaChart data={data}>
+                <defs><linearGradient id="opg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.4} /><stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} /></linearGradient></defs>
+                <XAxis dataKey="ts" tickFormatter={(v) => new Date(v).toLocaleString()} fontSize={10} stroke="hsl(var(--muted-foreground))" />
+                <YAxis fontSize={10} stroke="hsl(var(--muted-foreground))" />
+                <Tooltip labelFormatter={(v) => new Date(Number(v)).toLocaleString()} contentStyle={{ background: 'hsl(var(--popover))', border: '1px solid hsl(var(--border))', borderRadius: 6, fontSize: 12 }} />
+                <Area dataKey="count" stroke="hsl(var(--primary))" fill="url(#opg)" />
+                <Area dataKey="ok_count" stroke="hsl(var(--success))" fill="transparent" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
-        </div>
+        </CardContent>
+      </Card>
 
-        <div className="card p-5">
-          <div className="text-[13px] font-semibold text-gray-200 mb-3">
-            实时吞吐 RPM <span className="text-surface-muted text-[11px] font-normal">/ Throughput</span>
-          </div>
-          <div className="h-[210px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={ts}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                <XAxis dataKey="ts" tick={{ fill: '#8a8a93', fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#8a8a93', fontSize: 10 }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={tipStyle} />
-                <Line type="monotone" dataKey="rate" name="RPM" stroke="#76b900" strokeWidth={2.5} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-
-      {/* Token + 错误分类 */}
-      <div className="grid grid-cols-3 gap-3.5 mb-4">
-        <div className="col-span-2 card p-5">
-          <div className="text-[13px] font-semibold text-gray-200 mb-3">
-            Token 消耗趋势 <span className="text-surface-muted text-[11px] font-normal">/ Token Usage</span>
-          </div>
-          <div className="h-[170px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={ts}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                <XAxis dataKey="ts" tick={{ fill: '#8a8a93', fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#8a8a93', fontSize: 10 }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={tipStyle} />
-                <Bar dataKey="tokens" name="Tokens" radius={[3, 3, 0, 0]}>
-                  {ts.map((_, i) => <Cell key={i} fill="#76b900" fillOpacity={0.5 + (i % 5) * 0.1} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className="card p-5">
-          <div className="text-[13px] font-semibold text-gray-200 mb-3">错误分类 <span className="text-surface-muted text-[11px] font-normal">/ Breakdown</span></div>
-          <div className="space-y-3 pt-1">
-            <MiniStat label="成功 Success" value={m.SuccessRequests} color="#76b900" />
-            <MiniStat label="业务错误 Error" value={m.ErrorRequests} color="#f06060" />
-            <MiniStat label="限流 Rate-Limited" value={m.RateLimited} color="#f5c542" />
-            <MiniStat label="超时 Timeout" value={m.Timeouts} color="#a855f7" />
-          </div>
-        </div>
-      </div>
-
-      {/* 密钥健康表 */}
-      <div className="card p-5">
-        <div className="text-[13px] font-semibold text-gray-200 mb-3">
-          上游密钥健康度 <span className="text-surface-muted text-[11px] font-normal">/ Key Health</span>
-        </div>
-        {health.length === 0 ? <EmptyState text="暂无密钥健康数据，发起请求后将自动采集" /> : (
+      <Card>
+        <CardHeader><CardTitle>上游密钥健康</CardTitle></CardHeader>
+        <CardContent>
           <div className="overflow-x-auto">
-            <table className="w-full text-[12.5px]">
-              <thead>
-                <tr className="text-surface-muted text-[10.5px] uppercase tracking-wider border-b border-surface-border">
-                  <th className="text-left px-3 py-2 font-semibold">密钥</th>
-                  <th className="text-left px-3 py-2 font-semibold">状态</th>
-                  <th className="text-right px-3 py-2 font-semibold">请求数</th>
-                  <th className="text-right px-3 py-2 font-semibold">成功率</th>
-                  <th className="text-right px-3 py-2 font-semibold">平均延迟</th>
-                  <th className="text-right px-3 py-2 font-semibold">连续失败</th>
-                  <th className="text-left px-3 py-2 font-semibold">健康度</th>
-                </tr>
-              </thead>
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-xs text-muted-foreground">
+                <th className="pb-2">密钥</th><th className="pb-2">状态</th><th className="pb-2">请求数</th>
+                <th className="pb-2">成功率</th><th className="pb-2">延迟</th><th className="pb-2">连续失败</th>
+              </tr></thead>
               <tbody>
-                {health.map((h, i: number) => (
-                  <tr key={i} className="border-b border-surface-border/60 hover:bg-surface-card-hover">
-                    <td className="px-3 py-2.5 font-mono text-[11.5px] text-gray-300">{h.key_mask}</td>
-                    <td className="px-3 py-2.5"><StatusBadge status={h.status} /></td>
-                    <td className="px-3 py-2.5 text-right text-gray-300">{h.total_requests}</td>
-                    <td className="px-3 py-2.5 text-right">
-                      <span className={h.success_rate >= 95 ? 'text-nv-green' : h.success_rate >= 80 ? 'text-amber-400' : 'text-red-400'}>
-                        {h.success_rate.toFixed(1)}%
-                      </span>
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-gray-400">{h.avg_latency_ms?.toFixed(0) || 0}ms</td>
-                    <td className="px-3 py-2.5 text-right">
-                      <span className={h.consecutive_fail > 0 ? 'text-red-400' : 'text-surface-muted'}>{h.consecutive_fail}</span>
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <div className="flex items-center gap-2">
-                        <div className="w-20 h-1.5 bg-surface-card-hover rounded-full overflow-hidden">
-                          <div className="h-full rounded-full" style={{
-                            width: `${h.success_rate}%`,
-                            background: h.success_rate >= 95 ? '#76b900' : h.success_rate >= 80 ? '#f5c542' : '#f06060',
-                          }} />
-                        </div>
-                        <span className="text-[11px] text-surface-muted">{h.ewma_rate?.toFixed(0) || 0}%</span>
-                      </div>
-                    </td>
+                {(khQ.data?.data ?? []).map((k) => (
+                  <tr key={k.key_mask} className="border-t">
+                    <td className="py-2 font-mono">{k.key_mask}</td>
+                    <td className="py-2">{k.status}</td>
+                    <td className="py-2">{fmtNum(k.total_requests)}</td>
+                    <td className="py-2">{fmtPct(k.success_rate)}</td>
+                    <td className="py-2">{k.avg_latency_ms}ms</td>
+                    <td className="py-2">{k.consecutive_fail}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        )}
-      </div>
-    </>
+        </CardContent>
+      </Card>
+    </div>
   )
 }
 
-function MiniStat({ label, value, color }: { label: string; value: number; color: string }) {
+function Stat({ label, value, accent }: { label: string; value: string; accent?: string }) {
   return (
-    <div className="flex items-center justify-between">
-      <div className="flex items-center gap-2">
-        <span className="w-2 h-2 rounded-full" style={{ background: color }} />
-        <span className="text-[12px] text-surface-muted">{label}</span>
-      </div>
-      <span className="text-[15px] font-bold text-gray-200">{value}</span>
-    </div>
+    <Card><CardContent className="p-4">
+      <div className={`text-2xl font-bold ${accent || ''}`}>{value}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{label}</div>
+    </CardContent></Card>
   )
 }

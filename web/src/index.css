@@ -1,88 +1,132 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+/* v0.9 设计系统：CSS 变量驱动的亮/暗双主题，NVIDIA 绿 accent */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+  --background: 0 0% 100%;
+  --foreground: 240 10% 4%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 4%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 4%;
+  --muted: 240 5% 96%;
+  --muted-foreground: 240 4% 46%;
+  --border: 240 6% 90%;
+  --input: 240 6% 90%;
+  --ring: 84 100% 40%;
+  --primary: 84 100% 36%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 240 5% 96%;
+  --secondary-foreground: 240 6% 10%;
+  --accent: 84 100% 45%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --success: 142 71% 45%;
+  --warning: 38 92% 50%;
+  --sidebar: 240 5% 98%;
+  --radius: 0.6rem;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: 240 6% 5%;
+  --foreground: 0 0% 98%;
+  --card: 240 6% 7%;
+  --card-foreground: 0 0% 98%;
+  --popover: 240 6% 7%;
+  --popover-foreground: 0 0% 98%;
+  --muted: 240 4% 14%;
+  --muted-foreground: 240 5% 65%;
+  --border: 240 5% 16%;
+  --input: 240 5% 18%;
+  --ring: 84 100% 45%;
+  --primary: 84 100% 42%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 240 4% 14%;
+  --secondary-foreground: 0 0% 98%;
+  --accent: 84 100% 48%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 98%;
+  --success: 142 71% 45%;
+  --warning: 38 92% 50%;
+  --sidebar: 240 7% 4%;
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-success: hsl(var(--success));
+  --color-warning: hsl(var(--warning));
+  --color-sidebar: hsl(var(--sidebar));
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace;
+}
 
 @layer base {
-  :root {
-    color-scheme: dark;
+  * {
+    border-color: hsl(var(--border));
   }
   body {
-    @apply bg-surface text-gray-200 antialiased;
-    font-family: theme('fontFamily.sans');
-  }
-  /* 滚动条 */
-  ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  ::-webkit-scrollbar-track {
-    @apply bg-transparent;
-  }
-  ::-webkit-scrollbar-thumb {
-    @apply bg-surface-border rounded;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    @apply bg-surface-border-hover;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-font-smoothing: antialiased;
   }
 }
 
-@layer components {
-  /*
-   * 卡片：扁平 shadcn 风（去玻璃拟态）。保留 .glass-card 类名以兼容旧页面，
-   * 全站卡片统一观感。新增 .card 别名供新组件使用。
-   */
-  .glass-card,
-  .card {
-    @apply bg-surface-card border border-surface-border rounded-xl;
-  }
-  /* KPI 卡片 */
-  .kpi-card {
-    @apply card p-4 relative overflow-hidden transition-all duration-200 hover:border-surface-border-hover;
-  }
-  .kpi-card::after {
-    content: '';
-    @apply absolute -top-10 -right-8 w-24 h-24 rounded-full pointer-events-none;
-    background: radial-gradient(circle, rgba(118, 185, 0, 0.07), transparent 70%);
-  }
-  /* 主按钮 */
-  .btn-primary {
-    @apply inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-nv-green text-black font-semibold text-sm hover:bg-nv-green-bright transition-colors disabled:opacity-50 disabled:pointer-events-none;
-  }
-  .btn-ghost {
-    @apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-gray-300 hover:bg-surface-card-hover transition-colors text-sm;
-  }
-  .btn-outline {
-    @apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-gray-300 border border-surface-border hover:bg-surface-card-hover hover:text-white transition-colors disabled:opacity-50 disabled:pointer-events-none;
-  }
-  /* 导航项 */
-  .nav-item {
-    @apply px-3 py-2 rounded-lg text-gray-400 hover:bg-surface-card-hover hover:text-gray-200 transition-all duration-150 cursor-pointer relative flex items-center gap-2.5 text-sm;
-  }
-  .nav-item.active {
-    @apply text-white bg-surface-card-hover;
-  }
-  .nav-item.active::before {
-    content: '';
-    @apply absolute left-0 top-2 bottom-2 w-[3px] bg-nv-green rounded;
-  }
-  /* 输入框 */
-  .input {
-    @apply w-full px-3 py-2 bg-surface-card border border-surface-border rounded-lg text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-nv-green/40 focus:border-nv-green/40 transition-colors text-sm;
-  }
-  /* 状态点 */
-  .status-dot {
-    @apply w-1.5 h-1.5 rounded-full inline-block;
-  }
-  .status-dot.ok {
-    @apply bg-nv-green;
-    box-shadow: 0 0 6px theme('colors.nv.green');
-  }
-  .status-dot.warn {
-    @apply bg-amber-400;
-    box-shadow: 0 0 6px theme('colors.amber.400');
-  }
-  .status-dot.err {
-    @apply bg-red-500;
-    box-shadow: 0 0 6px theme('colors.red.500');
-  }
+/* 沉浸式光效：广场背景极光 */
+.aurora-bg {
+  position: relative;
+  isolation: isolate;
 }
+.aurora-bg::before {
+  content: '';
+  position: absolute;
+  inset: -20%;
+  z-index: -1;
+  background:
+    radial-gradient(40% 50% at 15% 20%, hsl(var(--primary) / 0.18), transparent 60%),
+    radial-gradient(35% 45% at 85% 15%, hsl(var(--accent) / 0.14), transparent 60%),
+    radial-gradient(50% 60% at 50% 100%, hsl(200 100% 50% / 0.08), transparent 60%);
+  filter: blur(40px);
+  pointer-events: none;
+  animation: aurora-drift 18s ease-in-out infinite alternate;
+}
+@keyframes aurora-drift {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  100% { transform: translate3d(2%, -2%, 0) scale(1.08); }
+}
+
+.glow-ring {
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.25), 0 0 24px hsl(var(--primary) / 0.18);
+}
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: hsl(var(--muted)); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.5); }

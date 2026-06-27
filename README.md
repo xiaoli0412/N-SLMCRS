@@ -4,22 +4,24 @@
 
 <p align="center">
   <img alt="Go" src="https://img.shields.io/badge/Go-1.25-76b900?logo=go&logoColor=white">
-  <img alt="React" src="https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-pure--Go-003b57?logo=sqlite&logoColor=white">
-  <img alt="License" src="https://img.shields.io/badge/status-v0.8.0-76b900">
-  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.8.0-76b900?logo=github&logoColor=white"></a>
+  <img alt="License" src="https://img.shields.io/badge/status-v0.9.0-76b900">
+  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.9.0-76b900?logo=github&logoColor=white"></a>
 </p>
 
-> 📦 **最新发布 [v0.8.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.8.0)** — 数据库备份 · ghcr 镜像流水线 · 部署提速 · 开发完善。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
+> 📦 **最新发布 [v0.9.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.9.0)** — 模型级+永久熔断 · 双语错误 · 日志升级 · 模型参数二阶面板 · UI 全量重构。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
 
 ---
 
-## 🆕 v0.8.0 亮点
+## 🆕 v0.9.0 亮点
 
-- 💽 **数据库备份功能**：`VACUUM INTO` 事务一致快照（WAL 安全、无撕裂），定时轮转（默认 24h / 保留 7 份）+ 管理面板即时备份 / 下载 / 删除。备份落持久卷，容器重建不丢。
-- 🚀 **ghcr 镜像流水线 + 部署提速**：本地构建双镜像推 `ghcr.io`，服务器 `docker compose pull && up -d` 秒级上线；Rust LTO 重编译挪到开发机，小服务器不再扛构建。`.dockerignore` 砍掉 ~280MB 无关上下文（`kernel-rs/target`、`dist`）。
-- 🛠 **部署一键脚本**：`scripts/deploy.sh v0.8.0` 自动构建→推送→服务器拉取→健康检查（`/health` + `/healthz`）。
-- 🔧 **开发完善**：v0.7 新模块测试补齐（inflight/tier/specs/registry/kernel_client）、接入 `NVIDIA_TEST_KEY` 启动幂等播种、GitHub Actions CI（vet+test+build）、Makefile。
+- 🛡 **模型级 + 永久熔断**：按模型遍历所有 NVIDIA 推理接口各探 N 次（次数/间隔可由管理面板热改），按成功率判定 `closed / open / permanent`；成功率长期低于 30%（地板可配）连续多轮 → 永久熔断。熔断模型从公开 `/v1/models` 实时隐藏，请求已熔断模型返回双语说明 + 建议替代模型。
+- 🌐 **双语错误 + 请求自动转换**：所有错误响应统一 `{message(zh), message_en(en), type, trace_id}`；自动纠正 `messages` 为字符串、`prompt`→`messages`、OpenAI 别名（gpt-4o 等）→ NVIDIA 等价；多模态 `content` 数组透传视觉模型。
+- 📊 **日志系统升级**：内置 `log/slog` 结构化日志，扇出 stdout + `app_logs` 表，日志中心页有真实全量数据；`LOG_LEVEL` / `LOG_FORMAT` 可配，trace_id 全链路贯穿。
+- 🔬 **模型参数二阶面板**：接入 HuggingFace 模型卡 + OpenRouter + LiteLLM 富化架构/定价/许可证/支持接口，广场卡片点击弹出二阶抽屉（概览/健康/探活/参数四 Tab）。
+- 🎨 **UI 全量重构**：Vite 6 + React 19 + shadcn/ui + Tailwind v4 + framer-motion；亮/暗主题切换、沉浸极光广场、3D 倾斜卡片、模型熔断徽标；移除 OCTOPUS/sub2api 占位。
+- 🛠 **部署**：`scripts/deploy.sh v0.9.0` 自动构建→推送→服务器拉取→健康检查。
 
 ---
 
@@ -27,10 +29,10 @@
 
 - **密钥聚合 + 并发先到先得**：多个 NVIDIA Studio 账号密钥池化，热模型同时发起 N 个请求，返回最先成功的结果。
 - **严格不超官方限流**：每 Key 独立令牌桶（默认 40 RPM），并根据上游 `X-RateLimit-Remaining` 实时校准，杜绝浪费。
-- **熔断 + 半开探测 + 指数退避**：连续失败自动熔断，冷却时长 30s→60s→120s 指数增长封顶 10 分钟；半开态主动放行探测请求自愈。
+- **熔断 + 半开探测 + 指数退避**：连续失败自动熔断（按 Key 与按模型双轨），冷却时长指数增长封顶 10 分钟；半开态主动放行探测请求自愈。
 - **OpenAI / Claude / Gemini 多协议兼容**：`/v1/chat/completions`、`/v1/completions`、`/v1/models`、`/v1/messages`、`/v1beta/...:generateContent`、`/v1/embeddings`、`/v1/ranking`。
 - **流式 SSE 透传 + 流式健康记录**：`stream:true` 原生支持，首字节即锁定获胜上游；流式响应同样写入 request_logs 被动统计。
-- **模型广场 + 双路可用度（仿 new-api）**：24h 自动同步 `/v1/models`；每模型聚合被动可用度评分（availability_score / avg_latency / 错误数）+ 主动探活（probe_ok / 延迟），支持单模型 Test 与一键 Probe-All。
+- **模型广场 + 双路可用度**：24h 自动同步 `/v1/models`；每模型聚合被动可用度评分 + 主动探活，支持单模型 Test 与一键 Probe-All；模型级健康扫描 + 永久熔断。
 - **Auto-Pilot 智能调度**：三模式（手动 / 辅助 / 全自动）× 三引擎（自适应 PID·EWMA / 轻量预测 Holt-Winters / LLM Agent）。LLM 引擎已 **agent 化**——ReAct 循环（think→act→observe）调用调度工具，产出可调试推理轨迹。
 - **鉴权强化 + 首登强制改密**：默认 `ADMIN` 令牌首登强制修改并写入 bcrypt 哈希；改密前管理 API 全锁定。
 - **运维监控面板（shadcn 风）**：Vite + Tailwind 扁平暗色主题，实时成功率 / 请求量 / Token / 每 Key 健康度 / Auto-Pilot 快照 / 推理轨迹全维度图表。
@@ -92,10 +94,10 @@ cp .env.example .env
 # 编辑 .env：填入 ADMIN_TOKEN 和 NVIDIA_TEST_KEY
 
 # 2a. 从 ghcr 拉取已发布镜像并启动（生产推荐，秒级）
-TAG=v0.8.0 docker compose pull
+TAG=v0.9.0 docker compose pull
 docker compose up -d
 
-# 2b. 或本地构建（开发用，同时拉起 gateway + kernel，默认注入 v0.8.0 版本号）
+# 2b. 或本地构建（开发用，同时拉起 gateway + kernel，默认注入 v0.9.0 版本号）
 docker compose up -d --build
 
 # 3. 访问
@@ -107,13 +109,13 @@ docker compose up -d --build
 **远程服务器一键部署**（本地构建→推 ghcr→服务器拉取→健康检查）：
 
 ```bash
-make publish TAG=v0.8.0        # 本地构建双镜像推 ghcr（latest + v0.8.0）
-bash scripts/deploy.sh v0.8.0  # 服务器 git pull + pull + up -d + 健康检查
+make publish TAG=v0.9.0        # 本地构建双镜像推 ghcr（latest + v0.9.0）
+bash scripts/deploy.sh v0.9.0  # 服务器 git pull + pull + up -d + 健康检查
 ```
 
 双标签构建（手动）：
-- 网关：`docker build -t ghcr.io/xiaoli0412/n-slmcrs-gateway:latest -t ghcr.io/xiaoli0412/n-slmcrs-gateway:v0.8.0 .`
-- 内核：`docker build -f Dockerfile.kernel -t ghcr.io/xiaoli0412/n-slmcrs-kernel:latest -t ghcr.io/xiaoli0412/n-slmcrs-kernel:v0.8.0 .`
+- 网关：`docker build -t ghcr.io/xiaoli0412/n-slmcrs-gateway:latest -t ghcr.io/xiaoli0412/n-slmcrs-gateway:v0.9.0 .`
+- 内核：`docker build -f Dockerfile.kernel -t ghcr.io/xiaoli0412/n-slmcrs-kernel:latest -t ghcr.io/xiaoli0412/n-slmcrs-kernel:v0.9.0 .`
 
 数据持久化在 Docker 命名卷 `nslmcrs-data` 中（含数据库与 `/data/backups` 备份目录）。
 
@@ -374,7 +376,7 @@ curl http://localhost:8787/api/admin/autopilot/state -H "X-Admin-Token: $ADMIN_T
 
 **后续** — 生态集成
 - kernel 可用度聚合 Go 侧接入（`/availability` 端点契约就绪，待跨层打通）+ 注册表 id 归一化收敛
-- new-api / OCTOPUS / Webhook 集成钩子落地
+- new-api / sapi / Webhook 集成钩子落地（v0.10）；Rust 化子系统（熔断状态机/限流/健康聚合迁入 kernel-rs，v0.11）
 - 内置 Chat 测试台（仿 NVIDIA Studio）
 - 上游密钥应用层加密
 
@@ -391,4 +393,4 @@ curl http://localhost:8787/api/admin/autopilot/state -H "X-Admin-Token: $ADMIN_T
 
 ## 📄 许可
 
-私有项目 · N-SLMCRS · v0.8.0
+私有项目 · N-SLMCRS · v0.9.0

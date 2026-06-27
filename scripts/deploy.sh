@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# N-SLMCRS 远程部署脚本（v0.8.0）。
+# N-SLMCRS 远程部署脚本（v0.9.0）。
 #
 # 流程：本地 make publish（构建+推 ghcr）→ ssh 服务器 git pull + compose pull + up -d + 健康检查。
 # 本脚本可安全提交：不含任何密钥，传输委托 gitignored 的 scripts/rssh.sh。
 #
 # 用法：
-#   bash scripts/deploy.sh v0.8.0
-#   bash scripts/deploy.sh v0.8.0 --no-build   # 跳过本地构建+推送（镜像已发布）
+#   bash scripts/deploy.sh v0.9.0
+#   bash scripts/deploy.sh v0.9.0 --no-build   # 跳过本地构建+推送（镜像已发布）
 #
 # 环境变量（可选）：
 #   REMOTE_DIR   服务器上仓库克隆目录（未设则自动探测）

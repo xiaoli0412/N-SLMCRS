@@ -53,6 +53,8 @@ import (
 	"github.com/nslmcrs/gateway/internal/backup"
 	"github.com/nslmcrs/gateway/internal/config"
 	"github.com/nslmcrs/gateway/internal/data"
+	"github.com/nslmcrs/gateway/internal/modelcatalog"
+	"github.com/nslmcrs/gateway/internal/modelhealth"
 	"github.com/nslmcrs/gateway/internal/modelmeta"
 	"github.com/nslmcrs/gateway/internal/scheduler"
 	"golang.org/x/crypto/bcrypt"
@@ -64,13 +66,14 @@ const settingKeyTokenHash = "admin:token_hash"
 
 // Handler 管理 API 处理器。
 type Handler struct {
-	store  *data.Store
-	syncer *modelmeta.Syncer
-	prober *modelmeta.Prober // 模型探活器（可选；main.go 装配后注入）
-	cfg    *config.Config
-	ap     *autopilot.Controller // Auto-Pilot 总控（可选；main.go 装配后注入）
-	sched  *scheduler.Scheduler  // 调度器（可选；用于运行时改熔断/并发配置）
-	bk     *backup.Service       // 数据库备份服务（v0.8；可选）
+	store    *data.Store
+	syncer   *modelmeta.Syncer
+	prober   *modelmeta.Prober     // 模型探活器（可选；main.go 装配后注入）
+	cfg      *config.Config
+	ap       *autopilot.Controller // Auto-Pilot 总控（可选；main.go 装配后注入）
+	sched    *scheduler.Scheduler  // 调度器（可选；用于运行时改熔断/并发配置）
+	bk       *backup.Service       // 数据库备份服务（v0.8；可选）
+	sweeper  *modelhealth.Sweeper  // 模型级健康扫描器（v0.9；可选）
 }
 
 // New 创建管理 API 处理器。
@@ -93,6 +96,12 @@ func (h *Handler) SetProber(p *modelmeta.Prober) *Handler {
 // SetBackup 注入数据库备份服务（启用 /api/admin/backup 系列）。
 func (h *Handler) SetBackup(b *backup.Service) *Handler {
 	h.bk = b
+	return h
+}
+
+// SetHealthSweeper 注入模型级健康扫描器（启用 /api/admin/models/circuit 系列，v0.9）。
+func (h *Handler) SetHealthSweeper(s *modelhealth.Sweeper) *Handler {
+	h.sweeper = s
 	return h
 }
 
@@ -210,6 +219,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		g.POST("/models/sync", h.syncModels)
 		g.POST("/models/test", h.testModel)
 		g.POST("/models/probe-all", h.probeAllModels)
+
+		// 模型级熔断（v0.9）
+		g.GET("/models/circuit", h.listModelCircuit)
+		g.POST("/models/health-sweep", h.healthSweep)
+		g.POST("/models/circuit/reset", h.resetModelCircuit)
 
 		g.GET("/settings", h.getSettings)
 		g.PUT("/settings", h.putSettings)
@@ -593,7 +607,7 @@ type modelView struct {
 	ProbeOK           bool    `json:"probe_ok"`
 	ProbeStatus       string  `json:"probe_status"` // ok|error|timeout
 	ProbeLatencyMS    int     `json:"probe_latency_ms"`
-	// 扩展规格（v0.7 模型广场三级"参数说明"页，来自远程注册表，留空前端显示"—"）
+	// 扩展规格（v0.7 模型广场二阶面板"参数说明"，来自远程注册表，留空前端显示"—"）
 	MaxTokens       int      `json:"max_tokens"`
 	PricingIn       string   `json:"pricing_in"`
 	PricingOut      string   `json:"pricing_out"`
@@ -601,9 +615,17 @@ type modelView struct {
 	InputModalities []string `json:"input_modalities"`
 	ReleaseDate     string   `json:"release_date"`
 	CardURL         string   `json:"card_url"`
+	// v0.9：HF 富化架构 + 能力推导的支持接口
+	Architecture        string   `json:"architecture"`
+	SupportedInterfaces []string `json:"supported_interfaces"`
+	// v0.9：模型级熔断状态
+	CircuitState        string `json:"circuit_state"`         // closed|open|half_open|permanent
+	CircuitSuccessRate  int    `json:"circuit_success_rate"`  // 最近扫描成功率
+	CircuitPermanent    bool   `json:"circuit_permanent"`
+	CircuitOpenUntil    int64  `json:"circuit_open_until"`
 }
 
-// toModelViews 将 data.Model 列表拼装为带用量统计、探活结果与扩展规格的广场视图。
+// toModelViews 将 data.Model 列表拼装为带用量统计、探活结果、扩展规格与熔断状态的广场视图。
 func (h *Handler) toModelViews(ctx context.Context, ms []data.Model) []modelView {
 	health, _ := h.store.ModelHealthStats(ctx, time.Hour)
 	probes, _ := h.store.ListModelProbes(ctx)
@@ -613,6 +635,7 @@ func (h *Handler) toModelViews(ctx context.Context, ms []data.Model) []modelView
 		u := health[m.ID]
 		pr := probes[m.ID]
 		sp := specs[m.ID]
+		mc, _ := h.store.GetModelCircuit(ctx, m.ID)
 		v := modelView{
 			ID: m.ID, Object: m.Object, Created: m.Created, OwnedBy: m.OwnedBy, Root: m.Root,
 			Capability: m.Capability, ParamCount: m.ParamCount, ContextLength: m.ContextLength,
@@ -632,9 +655,24 @@ func (h *Handler) toModelViews(ctx context.Context, ms []data.Model) []modelView
 			License:           sp.License,
 			ReleaseDate:       sp.ReleaseDate,
 			CardURL:           sp.CardURL,
+			Architecture:      sp.Architecture,
 		}
 		if sp.InputModalities != "" {
 			v.InputModalities = strings.Split(sp.InputModalities, ",")
+		}
+		// 支持接口：DB 已富化则取，否则按能力推导
+		if sp.SupportedInterfaces != "" {
+			v.SupportedInterfaces = strings.Split(sp.SupportedInterfaces, ",")
+		} else {
+			v.SupportedInterfaces = modelcatalog.SupportedInterfacesFor(m.Capability)
+		}
+		// 熔断状态（无记录视为 closed）
+		v.CircuitState = data.CircuitClosed
+		if mc != nil {
+			v.CircuitState = mc.State
+			v.CircuitSuccessRate = mc.SuccessRatePct
+			v.CircuitPermanent = mc.Permanent
+			v.CircuitOpenUntil = mc.OpenUntil
 		}
 		views = append(views, v)
 	}
@@ -812,6 +850,62 @@ func (h *Handler) getModelProbes(c *gin.Context) {
 	}
 	latest, _ := h.store.ListModelProbes(c.Request.Context())
 	c.JSON(http.StatusOK, gin.H{"history": history, "latest": latest[id]})
+}
+
+// --- 模型级熔断（v0.9）---
+
+// listModelCircuit 列出全部模型熔断状态。
+//   GET /api/admin/models/circuit?state=open   仅返回指定状态（可选）
+func (h *Handler) listModelCircuit(c *gin.Context) {
+	state := strings.TrimSpace(c.Query("state"))
+	var list []data.ModelCircuit
+	var err error
+	if state != "" {
+		list, err = h.store.ListModelCircuitByState(c.Request.Context(), state)
+	} else {
+		list, err = h.store.ListModelCircuitAll(c.Request.Context())
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": list})
+}
+
+// healthSweep 触发一次全量模型健康扫描。
+//   POST /api/admin/models/health-sweep
+func (h *Handler) healthSweep(c *gin.Context) {
+	if h.sweeper == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "健康扫描器未启用"})
+		return
+	}
+	if err := h.sweeper.SweepAll(c.Request.Context()); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// resetModelCircuit 手动复位模型熔断（解除永久/临时熔断）。
+//   POST /api/admin/models/circuit/reset   body: {"model":"meta/llama-..."}
+func (h *Handler) resetModelCircuit(c *gin.Context) {
+	var req struct {
+		Model string `json:"model"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = strings.TrimSpace(c.Query("model"))
+	}
+	if model == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 model 参数"})
+		return
+	}
+	if err := h.store.ResetModelCircuit(c.Request.Context(), model); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "model": model})
 }
 
 // --- 日志 ---

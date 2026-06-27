@@ -170,23 +170,44 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	if specs, err := modelcatalog.SyncRegistry(ctx); err == nil && len(specs) > 0 {
 		matched := 0
 		for _, m := range models {
-			if sp, ok := specs[m.ID]; ok {
-				mods := ""
-				if len(sp.InputModalities) > 0 {
-					mods = strings.Join(sp.InputModalities, ",")
-				}
-				_ = s.store.UpsertModelSpec(ctx, data.ModelSpecRow{
-					Model:           m.ID,
-					MaxTokens:       sp.MaxTokens,
-					PricingIn:       sp.PricingIn,
-					PricingOut:      sp.PricingOut,
-					License:         sp.License,
-					InputModalities: mods,
-					ReleaseDate:     sp.ReleaseDate,
-					CardURL:         sp.CardURL,
-				})
-				matched++
+			sp, ok := specs[m.ID]
+			if !ok {
+				continue
 			}
+			mods := ""
+			if len(sp.InputModalities) > 0 {
+				mods = strings.Join(sp.InputModalities, ",")
+			}
+			// v0.9：HuggingFace 富化架构/许可证（失败降级，不阻断）
+			if hf, err := modelcatalog.FetchHuggingFace(ctx, m.ID); err == nil {
+				if sp.Architecture == "" && hf.Architecture != "" {
+					sp.Architecture = hf.Architecture
+				}
+				if sp.License == "" && hf.License != "" {
+					sp.License = hf.License
+				}
+				if sp.CardURL == "" && hf.CardURL != "" {
+					sp.CardURL = hf.CardURL
+				}
+			}
+			// 能力推导的支持接口
+			ifaces := modelcatalog.SupportedInterfacesFor(m.Capability)
+			row := data.ModelSpecRow{
+				Model:           m.ID,
+				MaxTokens:       sp.MaxTokens,
+				PricingIn:       sp.PricingIn,
+				PricingOut:      sp.PricingOut,
+				License:         sp.License,
+				InputModalities: mods,
+				ReleaseDate:     sp.ReleaseDate,
+				CardURL:         sp.CardURL,
+				Architecture:    sp.Architecture,
+			}
+			if len(ifaces) > 0 {
+				row.SupportedInterfaces = strings.Join(ifaces, ",")
+			}
+			_ = s.store.UpsertModelSpec(ctx, row)
+			matched++
 		}
 		log.Printf("[modelmeta] 注册表富化: %d/%d 模型命中扩展规格", matched, len(models))
 	} else if err != nil {

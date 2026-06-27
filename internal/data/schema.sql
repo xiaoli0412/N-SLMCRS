@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS model_probe_history (
 );
 CREATE INDEX IF NOT EXISTS idx_probe_history_model ON model_probe_history(model, ts);
 
--- 模型扩展规格（来自 OpenRouter/LiteLLM 注册表，v0.7 模型广场三级"参数说明"页）
+-- 模型扩展规格（来自 OpenRouter/LiteLLM/HuggingFace 注册表，v0.7 模型广场三级"参数说明"页）
 CREATE TABLE IF NOT EXISTS model_specs (
     model            TEXT PRIMARY KEY,             -- 模型 id
     max_tokens       INTEGER DEFAULT 0,
@@ -83,6 +83,8 @@ CREATE TABLE IF NOT EXISTS model_specs (
     input_modalities TEXT DEFAULT '',               -- 逗号分隔
     release_date     TEXT DEFAULT '',
     card_url         TEXT DEFAULT '',
+    architecture     TEXT DEFAULT '',               -- 架构（v0.9：HF 富化，如 LlamaForCausalLM）
+    supported_interfaces TEXT DEFAULT '',           -- 支持的推理接口（v0.9：chat/embeddings/rerank，逗号分隔）
     synced_at        INTEGER NOT NULL
 );
 
@@ -136,6 +138,20 @@ CREATE TABLE IF NOT EXISTS app_logs (
 CREATE INDEX IF NOT EXISTS idx_app_logs_ts ON app_logs(ts);
 CREATE INDEX IF NOT EXISTS idx_app_logs_trace ON app_logs(trace_id);
 CREATE INDEX IF NOT EXISTS idx_app_logs_level ON app_logs(level, ts);
+
+-- 模型级熔断状态（v0.9：按模型熔断 + 永久熔断，与按 Key 熔断互补）
+CREATE TABLE IF NOT EXISTS model_circuit (
+    model              TEXT PRIMARY KEY REFERENCES models(id),
+    state              TEXT DEFAULT 'closed',   -- closed|open|half_open|permanent
+    open_until         INTEGER DEFAULT 0,       -- 冷却到期 Unix 秒；open 态有效
+    consecutive_fail   INTEGER DEFAULT 0,       -- 被动连续失败计数（dispatch 失败累加）
+    success_rate_pct   INTEGER DEFAULT 100,     -- 最近一次健康扫描成功率
+    bad_sweep_count    INTEGER DEFAULT 0,       -- 连续低于地板的扫描次数（永久熔断判定）
+    permanent          INTEGER DEFAULT 0,       -- 1=永久熔断（手动或自动，需手动复位）
+    last_sweep_at      INTEGER DEFAULT 0,
+    updated_at         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_circuit_state ON model_circuit(state);
 
 -- 动态设置（管理 API 可改）
 CREATE TABLE IF NOT EXISTS settings (

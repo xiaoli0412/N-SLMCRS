@@ -72,6 +72,13 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.addColumnIfMissing(ctx, "models", "last_seen_active_at", "INTEGER DEFAULT 0"); err != nil {
 		return err
 	}
+	// model_specs 表：architecture + supported_interfaces（v0.9）
+	if err := s.addColumnIfMissing(ctx, "model_specs", "architecture", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing(ctx, "model_specs", "supported_interfaces", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
 	return nil
 }
 

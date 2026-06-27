@@ -36,6 +36,20 @@ type Config struct {
 
 	// Backup 数据库备份配置（v0.8）
 	Backup BackupConfig
+
+	// ModelHealth 模型级健康扫描与熔断配置（v0.9）
+	ModelHealth ModelHealthConfig
+
+	// Logging 日志配置（v0.9）
+	Logging LoggingConfig
+}
+
+// LoggingConfig 日志配置（v0.9）。
+type LoggingConfig struct {
+	// Level 日志级别：debug / info / warn / error（默认 info）
+	Level string
+	// Format 日志格式：json / text（默认 json）
+	Format string
 }
 
 // ServerConfig HTTP 服务配置。
@@ -122,6 +136,28 @@ type BackupConfig struct {
 	Retention int
 }
 
+// ModelHealthConfig 模型级健康扫描与熔断配置（v0.9 新增）。
+//
+// 后台周期性对每个模型按其能力遍历所有 NVIDIA 推理接口各探 ProbeCount 次，
+// 间隔 ProbeInterval；按成功率判定 closed/open/permanent。
+// 成功率 < SuccessRateFloor 且连续 BadSweepToPermanent 次扫描 → 永久熔断。
+type ModelHealthConfig struct {
+	// ProbeCount 每个接口每轮探测次数（默认 3）
+	ProbeCount int
+	// ProbeInterval 同轮探测之间的间隔（默认 2s，避免突发）
+	ProbeInterval time.Duration
+	// SweepInterval 全量扫描周期（默认 30m）
+	SweepInterval time.Duration
+	// SuccessRateFloor 永久熔断地板：低于此成功率计为一次坏扫描（默认 30）
+	SuccessRateFloor int
+	// SuccessRateThreshold 临时熔断阈值：低于此但≥Floor 转 open（默认 80）
+	SuccessRateThreshold int
+	// BadSweepToPermanent 连续坏扫描次数达此值 → 永久熔断（默认 3）
+	BadSweepToPermanent int
+	// CooldownBase open 态初始冷却（指数退避起始，上限 10min；默认 30s）
+	CooldownBase time.Duration
+}
+
 // Load 从环境变量和 .env 文件加载配置。
 func Load() (*Config, error) {
 	// .env 可选（容器/裸机可能只用环境变量）
@@ -163,6 +199,19 @@ func Load() (*Config, error) {
 			Dir:       envStr("BACKUP_DIR", "data/backups"),
 			Interval:  envDuration("BACKUP_INTERVAL", 24*time.Hour),
 			Retention: envInt("BACKUP_RETENTION", 7),
+		},
+		ModelHealth: ModelHealthConfig{
+			ProbeCount:           envInt("MODEL_HEALTH_PROBE_COUNT", 3),
+			ProbeInterval:        envDuration("MODEL_HEALTH_PROBE_INTERVAL", 2*time.Second),
+			SweepInterval:        envDuration("MODEL_HEALTH_SWEEP_INTERVAL", 30*time.Minute),
+			SuccessRateFloor:     envInt("MODEL_HEALTH_SUCCESS_RATE_FLOOR", 30),
+			SuccessRateThreshold: envInt("MODEL_HEALTH_SUCCESS_RATE_THRESHOLD", 80),
+			BadSweepToPermanent:  envInt("MODEL_HEALTH_BAD_SWEEP_TO_PERMANENT", 3),
+			CooldownBase:         envDuration("MODEL_HEALTH_COOLDOWN_BASE", 30*time.Second),
+		},
+		Logging: LoggingConfig{
+			Level:  envStr("LOG_LEVEL", "info"),
+			Format: envStr("LOG_FORMAT", "json"),
 		},
 	}
 
