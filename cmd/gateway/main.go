@@ -249,9 +249,11 @@ func requestLogger(logger *logging.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		logger.Info(c.Request.Context(), "entry",
-			"request",
-			c.Request.Method+" "+c.Request.URL.Path,
+		// logger.Info 签名为 (ctx, source, msg, attrs...)：attrs 须为偶数对且 key 为字符串，
+		// 否则 slog 会把非字符串值归到 !BADKEY。故请求行拆为 method/path 两个键。
+		logger.Info(c.Request.Context(), "entry", "request",
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
 			"status", c.Writer.Status(),
 			"latency_ms", time.Since(start).Milliseconds())
 	}
