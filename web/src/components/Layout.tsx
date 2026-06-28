@@ -4,7 +4,7 @@ import { useState, type ReactNode } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   LayoutDashboard, Boxes, Activity, KeyRound, Share2, Bot, ScrollText,
-  DatabaseBackup, Settings, ShieldAlert, LogOut, Menu, X,
+  DatabaseBackup, Settings, ShieldAlert, LogOut, Menu, X, MessageSquare,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Toaster, toast } from 'sonner'
@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils'
 const NAV = [
   { to: '/', icon: LayoutDashboard, key: 'overview' },
   { to: '/models', icon: Boxes, key: 'models' },
+  { to: '/playground', icon: MessageSquare, key: 'playground' },
   { to: '/circuit', icon: ShieldAlert, key: 'circuit' },
   { to: '/operations', icon: Activity, key: 'operations' },
   { to: '/keys', icon: KeyRound, key: 'keys' },

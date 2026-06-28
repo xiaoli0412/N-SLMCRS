@@ -28,6 +28,8 @@
 //   POST   /api/admin/backup             立即备份（VACUUM INTO 快照）
 //   GET    /api/admin/backup/:file       下载备份文件
 //   DELETE /api/admin/backup/:file       删除备份文件
+// v0.11 端点：
+//   POST   /api/admin/playground/chat     内置 Chat 测试台（流式/非流式，管理凭证直调）
 // Phase 3 端点（Auto-Pilot）：
 //   GET    /api/admin/autopilot/state                 完整状态
 //   GET    /api/admin/autopilot/snapshot              决策快照
@@ -232,6 +234,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		g.GET("/models/circuit", h.listModelCircuit)
 		g.POST("/models/health-sweep", h.healthSweep)
 		g.POST("/models/circuit/reset", h.resetModelCircuit)
+
+		// 内置 Chat 测试台（v0.11）
+		g.POST("/playground/chat", h.playgroundChat)
 
 		g.GET("/settings", h.getSettings)
 		g.PUT("/settings", h.putSettings)

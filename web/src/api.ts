@@ -367,6 +367,53 @@ export const api = {
       method: 'POST', body: JSON.stringify({ model }),
     }),
 
+  // v0.11：内置 Chat 测试台（管理凭证直调，绕过下游凭证）
+  // 非流式：返回解析后的 OpenAI 响应 JSON。
+  playgroundChat: (body: any) =>
+    request<any>('/api/admin/playground/chat', { method: 'POST', body: JSON.stringify(body) }),
+  // 流式：解析 SSE，逐 delta 回调 onDelta；返回 {content, usage}。
+  playgroundStream: async (body: any, onDelta: (text: string) => void, signal?: AbortSignal) => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    const t = getToken()
+    if (t) headers['X-Admin-Token'] = t
+    const res = await fetch('/api/admin/playground/chat', {
+      method: 'POST', headers, body: JSON.stringify({ ...body, stream: true }), signal,
+    })
+    if (!res.ok) {
+      const txt = await res.text().catch(() => res.statusText)
+      throw new Error(`${res.status}: ${txt}`)
+    }
+    if (!res.body) throw new Error('无响应体')
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    let content = ''
+    let usage: any
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let sep: number
+      while ((sep = buf.indexOf('\n\n')) >= 0) {
+        const evt = buf.slice(0, sep)
+        buf = buf.slice(sep + 2)
+        for (const raw of evt.split('\n')) {
+          const line = raw.trim()
+          if (!line.startsWith('data:')) continue
+          const data = line.slice(5).trim()
+          if (data === '[DONE]') return { content, usage }
+          try {
+            const j = JSON.parse(data)
+            const delta = j?.choices?.[0]?.delta?.content
+            if (delta) { content += delta; onDelta(delta) }
+            if (j?.usage) usage = j.usage
+          } catch { /* 跨 chunk 的半行，下次拼齐再解析 */ }
+        }
+      }
+    }
+    return { content, usage }
+  },
+
   getSettings: () => request<SchedulerSettings>('/api/admin/settings'),
   putSettings: (s: Partial<SchedulerSettings>) =>
     request<{ ok: boolean; settings: SchedulerSettings }>('/api/admin/settings', {

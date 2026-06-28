@@ -6,7 +6,7 @@ const resources = {
     translation: {
       nav: { overview: '概览', models: '模型广场', operations: '调度运营', keys: '上游密钥',
         distribution: '凭证与集成', autopilot: 'Auto-Pilot', logs: '日志中心', backup: '备份',
-        settings: '设置', circuit: '模型熔断' },
+        settings: '设置', circuit: '模型熔断', playground: 'Chat 测试台' },
       theme: { toggle: '切换主题', light: '亮色', dark: '暗色' },
       lang: { toggle: '中/英' },
       common: { search: '搜索', all: '全部', active: '可用', refresh: '刷新', save: '保存',
@@ -29,7 +29,7 @@ const resources = {
     translation: {
       nav: { overview: 'Overview', models: 'Model Plaza', operations: 'Operations', keys: 'Upstream Keys',
         distribution: 'Credentials & Integrations', autopilot: 'Auto-Pilot', logs: 'Log Center',
-        backup: 'Backup', settings: 'Settings', circuit: 'Model Circuit' },
+        backup: 'Backup', settings: 'Settings', circuit: 'Model Circuit', playground: 'Playground' },
       theme: { toggle: 'Toggle theme', light: 'Light', dark: 'Dark' },
       lang: { toggle: 'ZH/EN' },
       common: { search: 'Search', all: 'All', active: 'Active', refresh: 'Refresh', save: 'Save',

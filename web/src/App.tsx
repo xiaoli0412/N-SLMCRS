@@ -14,6 +14,7 @@ import Logs from './pages/Logs'
 import Backup from './pages/Backup'
 import Settings from './pages/Settings'
 import Circuit from './pages/Circuit'
+import Playground from './pages/Playground'
 
 const qc = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1, staleTime: 15_000 } },
@@ -29,6 +30,7 @@ export default function App() {
               <Routes>
                 <Route path="/" element={<Overview />} />
                 <Route path="/models" element={<Models />} />
+                <Route path="/playground" element={<Playground />} />
                 <Route path="/circuit" element={<Circuit />} />
                 <Route path="/operations" element={<Operations />} />
                 <Route path="/keys" element={<Keys />} />
