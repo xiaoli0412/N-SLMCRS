@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/nslmcrs/gateway/internal/data"
+	"github.com/nslmcrs/gateway/internal/kernelctl"
 	"github.com/nslmcrs/gateway/internal/modelcatalog"
 	"github.com/nslmcrs/gateway/internal/upstream"
 )
@@ -45,12 +46,19 @@ type Sweeper struct {
 	cfg      Config
 	mu       sync.RWMutex
 	running  bool
+	kernel   *kernelctl.Client // v0.11：判定计算下沉 Rust sidecar（可选；不可达降级回 Go）
 }
 
 // New 创建扫描器。
 func New(store *data.Store, client *upstream.Client, cfg Config) *Sweeper {
 	applyDefaults(&cfg)
 	return &Sweeper{store: store, client: client, cfg: cfg}
+}
+
+// SetKernel 注入 Rust sidecar 客户端（启用 /verdict 判定下沉；nil=纯 Go）。
+func (s *Sweeper) SetKernel(k *kernelctl.Client) *Sweeper {
+	s.kernel = k
+	return s
 }
 
 // Config 返回当前配置快照（线程安全）。
@@ -201,6 +209,24 @@ func (s *Sweeper) applyVerdict(ctx context.Context, modelID string, rate int, cf
 	}
 	mc.SuccessRatePct = rate
 	mc.LastSweepAt = time.Now().Unix()
+
+	// v0.11：判定计算下沉 Rust sidecar；不可达或异常时降级回下方 Go 实现。
+	// 数值与 kernel-rs /verdict 对齐，确保降级透明。
+	if s.kernel != nil {
+		if v, ok := s.kernel.Verdict(ctx, rate, mc.State, mc.BadSweepCount,
+			cfg.SuccessRateFloor, cfg.SuccessRateThreshold, cfg.BadSweepToPermanent,
+			int64(cfg.CooldownBase.Seconds())); ok {
+			wasPerm := mc.Permanent
+			mc.State = v.State
+			mc.OpenUntil = v.OpenUntil
+			mc.BadSweepCount = v.BadSweepCount
+			mc.Permanent = v.Permanent
+			if v.Permanent && !wasPerm {
+				log.Printf("[modelhealth] 模型 %s 永久熔断（连续 %d 次低于 %d%%）", modelID, v.BadSweepCount, cfg.SuccessRateFloor)
+			}
+			return s.store.UpsertModelCircuit(ctx, *mc)
+		}
+	}
 
 	switch {
 	case rate >= cfg.SuccessRateThreshold:

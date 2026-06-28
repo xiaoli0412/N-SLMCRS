@@ -30,6 +30,7 @@ import (
 	"github.com/nslmcrs/gateway/internal/data"
 	"github.com/nslmcrs/gateway/internal/entry"
 	"github.com/nslmcrs/gateway/internal/hooks"
+	"github.com/nslmcrs/gateway/internal/kernelctl"
 	"github.com/nslmcrs/gateway/internal/logging"
 	"github.com/nslmcrs/gateway/internal/modelhealth"
 	"github.com/nslmcrs/gateway/internal/modelmeta"
@@ -137,6 +138,8 @@ func main() {
 		BadSweepToPermanent:  cfg.ModelHealth.BadSweepToPermanent,
 		CooldownBase:         cfg.ModelHealth.CooldownBase,
 	})
+	// 6c.0 v0.11：注入 Rust sidecar 客户端，启用 /verdict 判定下沉（不可达自动降级回 Go）
+	healthSweeper.SetKernel(kernelctl.NewFromEnv())
 	// 6c.1 启动时加载已持久化的模型健康扫描覆盖（来自 settings 表）
 	if err := admin.LoadPersistedModelHealthOverrides(rootCtx, healthSweeper, store); err != nil {
 		logger.Warn(rootCtx, "server", "加载已持久化的模型健康覆盖失败: "+err.Error())
