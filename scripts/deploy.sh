@@ -66,7 +66,13 @@ fi
 
 # 优先使用生产 compose（bind-mount /opt/n-slmcrs/data）；否则回退默认 compose。
 # COMPOSE_FILE 在服务器端解析，保证探测基于服务器实际存在的文件。
+# v0.12：确保 kernel-data 目录存在且属主 998（compose 自动创建的卷默认属 root，
+# 否则 kernel 容器以 998 运行无法写 /data/kernel.db → 重启循环）。
 ssh_ok "set -e; cd '$REMOTE_DIR'; \
+  if [ -f docker-compose.prod.yml ]; then \
+    mkdir -p /opt/n-slmcrs/kernel-data 2>/dev/null || true; \
+    chown -R 998:998 /opt/n-slmcrs/kernel-data 2>/dev/null || true; \
+  fi; \
   git fetch --tags && git checkout $TAG 2>/dev/null || git pull --ff-only; \
   export TAG=$TAG; \
   if [ -f docker-compose.prod.yml ]; then COMPOSE='docker compose -f docker-compose.prod.yml'; else COMPOSE='docker compose'; fi; \
