@@ -13,6 +13,9 @@ services:
     image: ghcr.io/xiaoli0412/n-slmcrs-gateway:${TAG:-v0.10.0}
     container_name: nslmcrs-gateway
     restart: unless-stopped
+    # 以 uid 998 运行，与 /opt/n-slmcrs/data 属主（主机 nslmcrs=998）对齐，
+    # 避免 root 写入致 DB/WAL 文件属主漂移（否则切回 998 时不可读写）。
+    user: "998:998"
     ports:
       - "${PORT:-8787}:8787"
     env_file:
