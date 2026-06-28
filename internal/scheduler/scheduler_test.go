@@ -2,11 +2,15 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/nslmcrs/gateway/internal/data"
+	"github.com/nslmcrs/gateway/internal/kernelctl"
 	"github.com/nslmcrs/gateway/internal/ratelimit"
 )
 
@@ -179,5 +183,113 @@ func TestMarkHealthy_HalfOpenToActive(t *testing.T) {
 	dbk, _ := store.GetUpstreamKey(ctx, id)
 	if dbk.Status != "active" {
 		t.Fatalf("DB 应 active, 得到 %s", dbk.Status)
+	}
+}
+
+// ─── v0.12 Rust 控制面接线（/reserve + /report）─────────────────────────
+
+// kernelClient 构造指向 url 的客户端；failClosed 私有字段经 KERNEL_FAIL_CLOSED env 置位。
+func kernelClient(t *testing.T, url string, failClosed bool) *kernelctl.Client {
+	t.Helper()
+	t.Setenv("KERNEL_DISABLE", "")
+	t.Setenv("KERNEL_URL", url)
+	if failClosed {
+		t.Setenv("KERNEL_FAIL_CLOSED", "1")
+	} else {
+		t.Setenv("KERNEL_FAIL_CLOSED", "0")
+	}
+	return kernelctl.NewFromEnv()
+}
+
+// fakeReserveKernel 启动桩 sidecar：/reserve 返回固定有序 key_id + 半开变更。
+func fakeReserveKernel(t *testing.T, reserved []int64, changes []kernelctl.KeyBreakerChange) (*kernelctl.Client, func()) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/reserve", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(kernelctl.ReserveResp{Reserved: reserved, KeyBreakerChanges: changes})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return kernelClient(t, srv.URL, false), srv.Close
+}
+
+// TestSelectKeys_FailOpenDegradesToGo kernel 不可达 + fail-open → 降级回 Go 路径，
+// 既有半开提升逻辑仍生效（回归降级透明）。
+func TestSelectKeys_FailOpenDegradesToGo(t *testing.T) {
+	s, store := newTestScheduler(t)
+	c := kernelClient(t, "http://127.0.0.1:1", false) // 闭端口 + fail-open
+	s.SetKernel(c)
+	ctx := context.Background()
+	id := addKey(t, s, store, "nvapi-fo")
+	store.UpdateUpstreamKeyStatus(ctx, id, "circuit_open", 5, time.Now().Unix()-1) // 冷却到期
+
+	cands, err := s.selectKeys(ctx, "meta/x")
+	if err != nil {
+		t.Fatalf("fail-open 应降级不报错, 得到 %v", err)
+	}
+	if len(cands) != 1 || cands[0].Status != "half_open" {
+		t.Fatalf("降级应走 Go 半开提升, 得到 %d 候选", len(cands))
+	}
+}
+
+// TestSelectKeys_FailClosedDeniesOnUnreachable kernel 不可达 + fail-closed → 拒绝准入。
+func TestSelectKeys_FailClosedDeniesOnUnreachable(t *testing.T) {
+	s, store := newTestScheduler(t)
+	c := kernelClient(t, "http://127.0.0.1:1", true) // 闭端口 + fail-closed
+	s.SetKernel(c)
+	addKey(t, s, store, "nvapi-fc")
+
+	_, err := s.selectKeys(context.Background(), "meta/x")
+	if err == nil {
+		t.Fatal("fail-closed 应返回错误")
+	}
+}
+
+// TestReportResults_EchoWritesBreakerState /report 返回的熔断变更 echo 回写 upstream_keys。
+func TestReportResults_EchoWritesBreakerState(t *testing.T) {
+	s, store := newTestScheduler(t)
+	ctx := context.Background()
+	id := addKey(t, s, store, "nvapi-echo")
+
+	// 桩 /report 返回该 id 的 circuit_open 变更
+	mux := http.NewServeMux()
+	mux.HandleFunc("/report", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(kernelctl.ReportResp{
+			KeyBreakerChanges: []kernelctl.KeyBreakerChange{
+				{KeyID: id, Status: "circuit_open", ConsecutiveFail: 5, CoolingUntil: 12345},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	s.SetKernel(kernelClient(t, srv.URL, false))
+
+	s.reportResults(ctx, "trace", []kernelctl.ReportItem{
+		{KeyID: id, Success: false, Status: "error"},
+	})
+	dbk, _ := store.GetUpstreamKey(ctx, id)
+	if dbk.Status != "circuit_open" || dbk.ConsecutiveFail != 5 || dbk.CoolingUntil != 12345 {
+		t.Fatalf("echo 应回写 circuit_open/5/12345, 得到 %s/%d/%d",
+			dbk.Status, dbk.ConsecutiveFail, dbk.CoolingUntil)
+	}
+}
+
+// TestSelectKeys_ReserveUsesKernelOrdering kernel 在线 → 用 /reserve 返回的顺序，
+// 跳过 Go rl.Allow/weightedShuffle。
+func TestSelectKeys_ReserveUsesKernelOrdering(t *testing.T) {
+	s, store := newTestScheduler(t)
+	ctx := context.Background()
+	id1 := addKey(t, s, store, "nvapi-r1")
+	id2 := addKey(t, s, store, "nvapi-r2")
+	// 桩返回反序 [id2, id1]
+	c, _ := fakeReserveKernel(t, []int64{id2, id1}, nil)
+	s.SetKernel(c)
+
+	cands, err := s.selectKeys(ctx, "meta/x")
+	if err != nil {
+		t.Fatalf("selectKeys: %v", err)
+	}
+	if len(cands) != 2 || cands[0].ID != id2 || cands[1].ID != id1 {
+		t.Fatalf("应按 /reserve 返回顺序 [id2,id1], 得到 %v", cands)
 	}
 }

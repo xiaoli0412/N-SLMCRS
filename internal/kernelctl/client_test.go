@@ -25,6 +25,17 @@ func startFakeKernel(t *testing.T) (*Client, func()) {
 			ShouldOpen: true, CooldownSec: 60, CoolUntil: 999,
 		})
 	})
+	mux.HandleFunc("/reserve", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(ReserveResp{
+			TraceID: "t", Reserved: []int64{3, 1, 2},
+			KeyBreakerChanges: []KeyBreakerChange{{KeyID: 4, Status: "half_open"}},
+		})
+	})
+	mux.HandleFunc("/report", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(ReportResp{
+			KeyBreakerChanges: []KeyBreakerChange{{KeyID: 5, Status: "circuit_open", ConsecutiveFail: 3, CoolingUntil: 999}},
+		})
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &Client{baseURL: srv.URL, http: &http.Client{Timeout: 1000000000}}, srv.Close
@@ -119,5 +130,78 @@ func TestNilClient_Downgrades(t *testing.T) {
 	}
 	if _, ok := c.CircuitCheck(context.Background(), 7, 5, 30); ok {
 		t.Fatal("nil 客户端应 ok=false")
+	}
+	if _, ok := c.Reserve(context.Background(), ReserveReq{TraceID: "t"}); ok {
+		t.Fatal("nil 客户端应 ok=false")
+	}
+	if _, ok := c.Report(context.Background(), ReportReq{TraceID: "t"}); ok {
+		t.Fatal("nil 客户端应 ok=false")
+	}
+	if c.FailClosed() {
+		t.Fatal("nil 客户端 FailClosed 应 false")
+	}
+}
+
+// ─── v0.12 /reserve、/report ───────────────────────────────────────────
+
+func TestReserve_OK(t *testing.T) {
+	c, _ := startFakeKernel(t)
+	resp, ok := c.Reserve(context.Background(), ReserveReq{
+		TraceID: "t", Model: "m", Concurrency: 3,
+		Candidates: []Candidate{{KeyID: 1, RPM: 500, WeightBoost: 1.0}},
+	})
+	if !ok {
+		t.Fatal("应 ok=true")
+	}
+	if resp.TraceID != "t" || len(resp.Reserved) != 3 || resp.Reserved[0] != 3 {
+		t.Fatalf("解码错误: %+v", resp)
+	}
+	if len(resp.KeyBreakerChanges) != 1 || resp.KeyBreakerChanges[0].Status != "half_open" {
+		t.Fatalf("变更解码错误: %+v", resp.KeyBreakerChanges)
+	}
+}
+
+func TestReserve_DowngradeOnUnreachable(t *testing.T) {
+	c := &Client{baseURL: "http://127.0.0.1:1", http: &http.Client{Timeout: 100000000}}
+	_, ok := c.Reserve(context.Background(), ReserveReq{TraceID: "t"})
+	if ok {
+		t.Fatal("不可达应 ok=false")
+	}
+}
+
+func TestReport_OK(t *testing.T) {
+	c, _ := startFakeKernel(t)
+	resp, ok := c.Report(context.Background(), ReportReq{
+		TraceID: "t",
+		Results: []ReportItem{{KeyID: 5, Success: false, Status: "error"}},
+	})
+	if !ok {
+		t.Fatal("应 ok=true")
+	}
+	if len(resp.KeyBreakerChanges) != 1 || resp.KeyBreakerChanges[0].Status != "circuit_open" {
+		t.Fatalf("变更解码错误: %+v", resp.KeyBreakerChanges)
+	}
+}
+
+func TestReport_DowngradeOnUnreachable(t *testing.T) {
+	c := &Client{baseURL: "http://127.0.0.1:1", http: &http.Client{Timeout: 100000000}}
+	_, ok := c.Report(context.Background(), ReportReq{TraceID: "t"})
+	if ok {
+		t.Fatal("不可达应 ok=false")
+	}
+}
+
+func TestNewFromEnv_FailClosed(t *testing.T) {
+	t.Setenv("KERNEL_DISABLE", "")
+	t.Setenv("KERNEL_URL", "http://1.2.3.4:9999")
+	t.Setenv("KERNEL_FAIL_CLOSED", "1")
+	c := NewFromEnv()
+	if c == nil || !c.FailClosed() {
+		t.Fatalf("KERNEL_FAIL_CLOSED=1 应 failClosed=true，得到 %+v", c)
+	}
+	t.Setenv("KERNEL_FAIL_CLOSED", "0")
+	c = NewFromEnv()
+	if c == nil || c.FailClosed() {
+		t.Fatalf("KERNEL_FAIL_CLOSED=0 应 failClosed=false，得到 %+v", c)
 	}
 }

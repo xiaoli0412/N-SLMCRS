@@ -165,3 +165,12 @@ func (m *Manager) Snapshot() map[int64]float64 {
 	}
 	return out
 }
+
+// KeyRPM 返回某 Key 的生效 RPM（override>0 用 override，否则默认值）。
+// v0.12：供 /reserve 候选构造把桶容量告诉 Rust kernel。
+func (m *Manager) KeyRPM(keyID int64, override int) int {
+	if override > 0 {
+		return override
+	}
+	return m.defaultRPM
+}

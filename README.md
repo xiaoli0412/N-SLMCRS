@@ -6,11 +6,19 @@
   <img alt="Go" src="https://img.shields.io/badge/Go-1.25-76b900?logo=go&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-pure--Go-003b57?logo=sqlite&logoColor=white">
-  <img alt="License" src="https://img.shields.io/badge/status-v0.11.0-76b900">
-  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.11.0-76b900?logo=github&logoColor=white"></a>
+  <img alt="License" src="https://img.shields.io/badge/status-v0.12.0-76b900">
+  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.12.0-76b900?logo=github&logoColor=white"></a>
 </p>
 
-> 📦 **最新发布 [v0.11.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.11.0)** — 内置 Chat 测试台 · Rust 决策计算下沉 · 基础铺路（日志 !BADKEY 修复 + ratelimit/modelhealth 单测 + CI 升级）。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
+> 📦 **最新发布 [v0.12.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.12.0)** — 全量 Rust 控制面权威化（/reserve 准入 + /report 反馈 + 持久化子决策 + flag-gated fail-closed）。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
+
+---
+
+## 🆕 v0.12.0 亮点
+
+- 🦀 **全量 Rust 控制面权威化**：热路径准入与反馈从 Go 进程内逻辑下沉为 Rust 权威状态。kernel-rs 新增 `/reserve`（批量选 Key + 令牌消费 + 加权随机排序，1 次 RPC/请求）与 `/report`（批量更新健康窗/熔断器/令牌校准）；令牌桶、滑动健康窗、按 Key 熔断器由 kernel 持有为权威状态（内存），熔断器态 + 子决策审计持久化到自有 SQLite（`/data/kernel.db`，重启不丢）。Rust 模块化拆分（compute/state/store/reserve/report）。
+- 🚦 **flag-gated fail-closed**：新增 `KERNEL_FAIL_CLOSED`（默认 `0`=fail-open 降级回 Go，与 v0.11 /verdict 上线方式一致；翻 `1`=硬依赖，kernel 不可达即拒绝准入）。上线先 0 浸泡观察，再翻 1。Go `kernelctl` 客户端新增 `Reserve`/`Report` 方法 + `FailClosed` 位；scheduler `selectKeys`→/reserve、循环后→/report、echo 回写 upstream_keys，降级路径保留 Go 既有逻辑。
+- 🧪 **CI 补 Rust 门禁**：新增 `rust` job 跑 `cargo fmt --check / clippy -D warnings / test`，此前 Rust 单测仅在 tag push 的 docker build 中编译、从不跑。全量单测覆盖 reserve/report/持久化往返、kernelctl Reserve/Report、scheduler fail-open/closed/echo/ordering。
 
 ---
 
@@ -395,7 +403,7 @@ curl http://localhost:8787/api/admin/autopilot/state -H "X-Admin-Token: $ADMIN_T
 
 **后续** — 生态集成
 - kernel 可用度聚合 Go 侧接入（`/availability` 端点契约就绪，待跨层打通）+ 注册表 id 归一化收敛
-- new-api / sapi / Webhook 集成钩子落地（v0.10）；决策计算下沉 kernel-rs（/verdict 接入慢路径，v0.11）；全量 Rust 控制面（限流桶+熔断+健康聚合权威化、/reserve 批量化、kernel 硬依赖 fail-closed，v0.12）
+- new-api / sapi / Webhook 集成钩子落地（v0.10）；决策计算下沉 kernel-rs（/verdict 接入慢路径，v0.11）；全量 Rust 控制面（限流桶+按 Key 熔断权威化、/reserve 准入 + /report 反馈批量化、持久化子决策、flag-gated fail-closed，v0.12 ✓）
 - 内置 Chat 测试台（仿 NVIDIA Studio）
 - 上游密钥应用层加密
 

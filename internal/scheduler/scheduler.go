@@ -25,6 +25,7 @@ import (
 
 	"github.com/nslmcrs/gateway/internal/data"
 	"github.com/nslmcrs/gateway/internal/inflight"
+	"github.com/nslmcrs/gateway/internal/kernelctl"
 	"github.com/nslmcrs/gateway/internal/ratelimit"
 	"github.com/nslmcrs/gateway/internal/upstream"
 )
@@ -49,6 +50,13 @@ type Scheduler struct {
 	mu        sync.RWMutex      // 保护 config 的运行时可变字段
 	runtime   RuntimeOverrides  // 可选：Auto-Pilot 注入（nil=用默认）
 	webhook   WebhookEmitter    // 可选：v0.10 事件回调（nil=不发射）
+	kernel    *kernelctl.Client // 可选：v0.12 Rust 控制面（nil=纯 Go 降级）
+}
+
+// SetKernel 注入 Rust 内核客户端（nil=清除，走纯 Go 降级）。
+// v0.12：热路径准入/反馈委托 kernel；kernel 不可达时按 FailClosed() 决定降级或拒绝。
+func (s *Scheduler) SetKernel(k *kernelctl.Client) {
+	s.kernel = k
 }
 
 // WebhookEmitter 事件回调抽象（避免 scheduler 直接依赖 hooks 包）。
@@ -238,6 +246,9 @@ func (s *Scheduler) DispatchCap(ctx context.Context, cap upstream.Capability, tr
 	var firstSuccess *attempt
 	var allErrors []error
 	recvCount := 0
+	// v0.12：kernel 在线时收集结果，循环后一次性 /report 批量反馈
+	reportItems := make([]kernelctl.ReportItem, 0, n)
+	degrade := s.kernel == nil // kernel 不可达时 Go 路径即权威（含降级回退场景）
 
 	for recvCount < n {
 		a := <-ch
@@ -245,34 +256,49 @@ func (s *Scheduler) DispatchCap(ctx context.Context, cap upstream.Capability, tr
 
 		if a.err != nil {
 			allErrors = append(allErrors, a.err)
-			s.recordResult(ctx, traceID, model, keys[a.index], "", "error", 0, a.err.Error(), n)
+			s.recordResult(ctx, traceID, model, keys[a.index], "", "error", 0, a.err.Error(), n, degrade)
+			if !degrade {
+				reportItems = append(reportItems, reportItem(keys[a.index].ID, false, "error", -1))
+			}
 			continue
 		}
 
 		resp := a.result
 		key := keys[a.index]
 
-		// 更新限流校准
-		if rem := resp.RateLimitRemaining(); rem >= 0 {
+		// 限流校准：degrade 时本地校准；否则由 /report 携带 remaining 校准 Rust 桶
+		rem := resp.RateLimitRemaining()
+		if degrade && rem >= 0 {
 			s.rl.Calibrate(key.ID, rem)
 		}
 
 		if resp.IsSuccess() {
 			firstSuccess = &a
-			s.recordSuccess(ctx, traceID, model, key, resp, n, start)
+			s.recordSuccess(ctx, traceID, model, key, resp, n, start, degrade)
+			if !degrade {
+				reportItems = append(reportItems, reportItem(key.ID, true, "success", rem))
+			}
 			break
 		}
 
 		if resp.IsRateLimited() {
-			s.recordResult(ctx, traceID, model, key, key.KeyMask, "rate_limited", resp.StatusCode, "429 Too Many Requests", n)
-			s.health.Record(key.ID, false, s.config.HealthWindow)
+			s.recordResult(ctx, traceID, model, key, key.KeyMask, "rate_limited", resp.StatusCode, "429 Too Many Requests", n, degrade)
+			if degrade {
+				s.health.Record(key.ID, false, s.config.HealthWindow)
+			} else {
+				reportItems = append(reportItems, reportItem(key.ID, false, "rate_limited", rem))
+			}
 			continue
 		}
 
 		// 其他错误（4xx/5xx）
 		nvErr := resp.ParseNVIDIAError()
-		s.recordResult(ctx, traceID, model, key, key.KeyMask, "error", resp.StatusCode, nvErr.Title, n)
-		s.health.Record(key.ID, false, s.config.HealthWindow)
+		s.recordResult(ctx, traceID, model, key, key.KeyMask, "error", resp.StatusCode, nvErr.Title, n, degrade)
+		if degrade {
+			s.health.Record(key.ID, false, s.config.HealthWindow)
+		} else {
+			reportItems = append(reportItems, reportItem(key.ID, false, "error", rem))
+		}
 		// 记录实际上游错误，便于在全部失败时透出真实原因（如模型名错误、请求体格式错误）
 		detail := nvErr.Detail
 		if detail == "" {
@@ -281,9 +307,13 @@ func (s *Scheduler) DispatchCap(ctx context.Context, cap upstream.Capability, tr
 		allErrors = append(allErrors, fmt.Errorf("上游 %s HTTP %d: %s", key.KeyMask, resp.StatusCode, detail))
 	}
 
-	// 检查熔断
-	for _, key := range keys {
-		s.checkCircuitBreaker(ctx, key)
+	// 检查熔断 / 批量反馈
+	if degrade {
+		for _, key := range keys {
+			s.checkCircuitBreaker(ctx, key)
+		}
+	} else {
+		s.reportResults(ctx, traceID, reportItems)
 	}
 
 	if firstSuccess != nil {
@@ -373,6 +403,8 @@ func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, r
 	var firstConnected *streamAttempt
 	var allErrors []error
 	recvCount := 0
+	reportItems := make([]kernelctl.ReportItem, 0, n)
+	degrade := s.kernel == nil
 
 	for recvCount < n {
 		a := <-ch
@@ -392,11 +424,19 @@ func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, r
 		_ = a.resp.Body.Close()
 		key := keys[a.index]
 		if a.resp.StatusCode == 429 {
-			s.recordResult(ctx, traceID, model, key, key.KeyMask, "rate_limited", 429, "429", n)
-			s.health.Record(key.ID, false, s.config.HealthWindow)
+			s.recordResult(ctx, traceID, model, key, key.KeyMask, "rate_limited", 429, "429", n, degrade)
+			if degrade {
+				s.health.Record(key.ID, false, s.config.HealthWindow)
+			} else {
+				reportItems = append(reportItems, reportItem(key.ID, false, "rate_limited", -1))
+			}
 		} else {
-			s.recordResult(ctx, traceID, model, key, key.KeyMask, "error", a.resp.StatusCode, "", n)
-			s.health.Record(key.ID, false, s.config.HealthWindow)
+			s.recordResult(ctx, traceID, model, key, key.KeyMask, "error", a.resp.StatusCode, "", n, degrade)
+			if degrade {
+				s.health.Record(key.ID, false, s.config.HealthWindow)
+			} else {
+				reportItems = append(reportItems, reportItem(key.ID, false, "error", -1))
+			}
 		}
 	}
 
@@ -404,8 +444,14 @@ func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, r
 		key := keys[firstConnected.index]
 		// 其余连接会被 context cancel 自动清理
 		latency := int(time.Since(start).Milliseconds())
-		s.markHealthy(ctx, key)
-		s.recordResult(ctx, traceID, model, key, key.KeyMask, "success", 200, "", n)
+		if degrade {
+			s.markHealthy(ctx, key)
+		}
+		s.recordResult(ctx, traceID, model, key, key.KeyMask, "success", 200, "", n, degrade)
+		if !degrade {
+			reportItems = append(reportItems, reportItem(key.ID, true, "success", -1))
+			s.reportResults(ctx, traceID, reportItems)
+		}
 		return &ScheduleResult{
 			StatusCode:   200,
 			TraceID:      traceID,
@@ -418,10 +464,17 @@ func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, r
 		}
 
 	streamCancel()
+	if !degrade {
+		s.reportResults(ctx, traceID, reportItems)
+	}
 	return nil, fmt.Errorf("所有上游密钥流式连接均失败: %v", allErrors)
 }
 
 // selectKeys 从 Store 获取可用 Key，过滤熔断/冷却/无余量的，按健康分加权随机排序。
+//
+// v0.12：kernel 在线时委托 /reserve（批量选 Key + 令牌消费 + 加权排序，1 次 RPC/请求）；
+// kernel 不可达时按 FailClosed() 决定：true→拒绝准入（返回 errKernelFailClosed），
+// false→降级回下方 Go 实现（selectKeys Go 路径即权威）。
 //
 // 熔断半开探测：circuit_open 且冷却到期（CoolingUntil<=now）的 Key 转为 half_open
 // 重新放行——每轮仅放行 1 个半开试探，避免同时试探多个待恢复密钥；试探成功(recordSuccess)
@@ -433,6 +486,86 @@ func (s *Scheduler) selectKeys(ctx context.Context, model string) ([]*data.Upstr
 		return nil, err
 	}
 
+	// v0.12：优先委托 Rust 控制面 /reserve。
+	if s.kernel != nil {
+		return s.selectKeysKernel(ctx, model, allKeys)
+	}
+	return s.selectKeysGo(ctx, allKeys)
+}
+
+// errKernelFailClosed kernel 不可达且启用 fail-closed 时拒绝准入。
+var errKernelFailClosed = fmt.Errorf("kernel 不可达，fail-closed 拒绝准入")
+
+// selectKeysKernel 委托 /reserve 选 Key。失败时按 FailClosed 降级或拒绝。
+func (s *Scheduler) selectKeysKernel(ctx context.Context, model string, allKeys []data.UpstreamKey) ([]*data.UpstreamKey, error) {
+	// 构造候选（不接触密钥明文，仅 key_id + rpm + 权重乘子）
+	now := time.Now().Unix()
+	byID := make(map[int64]*data.UpstreamKey, len(allKeys))
+	cands := make([]kernelctl.Candidate, 0, len(allKeys))
+	for i := range allKeys {
+		k := &allKeys[i]
+		if !k.Enabled {
+			continue
+		}
+		// 仍在冷却期的 circuit_open 跳过（与 Go 路径一致；/reserve 侧亦过滤）
+		if k.Status == "circuit_open" && k.CoolingUntil > now {
+			continue
+		}
+		byID[k.ID] = k
+		boost := 1.0
+		if s.runtime != nil {
+			boost = s.runtime.WeightBoost(k.ID)
+		}
+		cands = append(cands, kernelctl.Candidate{
+			KeyID: k.ID, RPM: s.rl.KeyRPM(k.ID, k.RPMOverride), WeightBoost: boost,
+		})
+	}
+
+	threshold, cooldown := s.circuitConfig()
+	req := kernelctl.ReserveReq{
+		TraceID:                "", // 由调用方注入；此处准入无 trace，留空
+		Model:                  model,
+		Concurrency:            s.effectiveConcurrency(),
+		CircuitThreshold:       threshold,
+		CircuitCooldownBaseSec: int64(cooldown.Seconds()),
+		HealthWindowSec:        int64(s.config.HealthWindow.Seconds()),
+		Candidates:             cands,
+	}
+	resp, ok := s.kernel.Reserve(ctx, req)
+	if !ok {
+		if s.kernel.FailClosed() {
+			return nil, errKernelFailClosed
+		}
+		// fail-open：降级回 Go 路径（shadow 即权威）
+		return s.selectKeysGo(ctx, allKeys)
+	}
+
+	// echo 半开提升等熔断器变更回写 upstream_keys（Rust 已持久化到 kernel.db，
+	// 此处同步 Go 侧 SQLite 供 admin UI / ListCircuitHiddenModels 读）
+	for _, ch := range resp.KeyBreakerChanges {
+		_ = s.store.UpdateUpstreamKeyStatus(ctx, ch.KeyID, ch.Status, ch.ConsecutiveFail, ch.CoolingUntil)
+		if k, exists := byID[ch.KeyID]; exists {
+			k.Status = ch.Status
+			k.ConsecutiveFail = ch.ConsecutiveFail
+			k.CoolingUntil = ch.CoolingUntil
+		}
+	}
+
+	// 按返回顺序映射回 key 结构（Rust 已消费令牌，跳过 Go rl.Allow）
+	out := make([]*data.UpstreamKey, 0, len(resp.Reserved))
+	for _, id := range resp.Reserved {
+		if k, exists := byID[id]; exists {
+			out = append(out, k)
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// selectKeysGo Go 侧准入路径（kernel 不可达降级时为权威；v0.11 既有实现）。
+func (s *Scheduler) selectKeysGo(ctx context.Context, allKeys []data.UpstreamKey) ([]*data.UpstreamKey, error) {
 	now := time.Now().Unix()
 	var candidates []*data.UpstreamKey
 	halfOpenAllowed := 1 // 每轮只放行 1 个半开试探
@@ -561,11 +694,15 @@ func (s *Scheduler) markHealthy(ctx context.Context, key *data.UpstreamKey) {
 }
 
 // recordSuccess 记录成功请求。
-func (s *Scheduler) recordSuccess(ctx context.Context, traceID, model string, key *data.UpstreamKey, resp *upstream.Response, concurrency int, start time.Time) {
+// degrade=true（kernel 不可达）时 Go 路径即权威：markHealthy + Calibrate；
+// degrade=false 时状态由 /report 批量更新，此处只写 request_logs + webhook + 模型反馈。
+func (s *Scheduler) recordSuccess(ctx context.Context, traceID, model string, key *data.UpstreamKey, resp *upstream.Response, concurrency int, start time.Time, degrade bool) {
 	latency := int(time.Since(start).Milliseconds())
 	tokens := extractTokens(resp.Body)
-	s.markHealthy(ctx, key)
-	s.feedbackModelCircuit(ctx, model, true) // 被动路径：成功清零连续失败
+	if degrade {
+		s.markHealthy(ctx, key)
+	}
+	s.feedbackModelCircuit(ctx, model, true) // 被动路径：成功清零连续失败（模型级，留 Go）
 	s.emitWebhook(ctx, "success", traceID, model, key.KeyMask, "", resp.StatusCode, latency)
 	s.store.RecordRequest(ctx, data.RequestLog{
 		TraceID:          traceID,
@@ -580,14 +717,17 @@ func (s *Scheduler) recordSuccess(ctx context.Context, traceID, model string, ke
 		TotalTokens:      tokens.Total,
 		Concurrency:      concurrency,
 	})
-	if rem := resp.RateLimitRemaining(); rem >= 0 {
-		s.rl.Calibrate(key.ID, rem)
+	if degrade {
+		if rem := resp.RateLimitRemaining(); rem >= 0 {
+			s.rl.Calibrate(key.ID, rem)
+		}
 	}
 }
 
 // recordResult 记录请求结果（成功/失败）。
-func (s *Scheduler) recordResult(ctx context.Context, traceID, model string, key *data.UpstreamKey, upstreamMask, status string, httpStatus int, errMsg string, concurrency int) {
-	// 被动路径：成功清零，失败累加（达阈值转 open）
+// degrade=true 时 health.Record 由本处内联；degrade=false 时由 /report 批量处理。
+func (s *Scheduler) recordResult(ctx context.Context, traceID, model string, key *data.UpstreamKey, upstreamMask, status string, httpStatus int, errMsg string, concurrency int, degrade bool) {
+	// 被动路径：成功清零，失败累加（达阈值转 open）——模型级，留 Go
 	s.feedbackModelCircuit(ctx, model, status == "success")
 	// 事件回调：失败/限流时发射 webhook（成功由 recordSuccess 单独发射）
 	if status != "success" {
@@ -600,11 +740,11 @@ func (s *Scheduler) recordResult(ctx context.Context, traceID, model string, key
 	s.store.RecordRequest(ctx, data.RequestLog{
 		TraceID:        traceID,
 		UpstreamKey:   upstreamMask,
-		Model:         model,
-		Status:        status,
-		HTTPStatus:    httpStatus,
+		Model:          model,
+		Status:         status,
+		HTTPStatus:     httpStatus,
 		ErrorMessage:  errMsg,
-		Concurrency:   concurrency,
+		Concurrency:    concurrency,
 	})
 }
 
@@ -619,6 +759,9 @@ func (s *Scheduler) emitWebhook(ctx context.Context, typ, traceID, model, keyMas
 // feedbackModelCircuit 被动反馈模型熔断状态（与 modelhealth 主动扫描互补）。
 // 成功清零连续失败并闭合临时熔断；失败累加，达阈值转 open（指数退避冷却）。
 // 永久熔断不受被动反馈影响。复用按 Key 的熔断阈值/冷却配置。
+//
+// v0.12：模型级熔断与 30min 健康扫描 sweeper 共驱动（sweeper 留 Go），故被动反馈
+// 继续由本方法落地（RecordModelCircuitFailure/Reset 已保留 permanent），不进 /report。
 func (s *Scheduler) feedbackModelCircuit(ctx context.Context, model string, success bool) {
 	if model == "" {
 		return
@@ -628,6 +771,40 @@ func (s *Scheduler) feedbackModelCircuit(ctx context.Context, model string, succ
 		_ = s.store.ResetModelCircuitConsecutive(ctx, model)
 	} else {
 		_ = s.store.RecordModelCircuitFailure(ctx, model, threshold, int64(cooldown.Seconds()))
+	}
+}
+
+// reportItem 构造 /report 单 Key 结果。rem<0 表示无 X-RateLimit-Remaining。
+func reportItem(keyID int64, success bool, status string, rem int) kernelctl.ReportItem {
+	it := kernelctl.ReportItem{KeyID: keyID, Success: success, Status: status}
+	if rem >= 0 {
+		r := int64(rem)
+		it.RateLimitRemaining = &r
+	}
+	return it
+}
+
+// reportResults 批量反馈给 Rust kernel 并 echo 回写 upstream_keys。
+// /report 失败为 best-effort：状态由后续 /report 重收敛，不阻断请求。
+func (s *Scheduler) reportResults(ctx context.Context, traceID string, items []kernelctl.ReportItem) {
+	if s.kernel == nil || len(items) == 0 {
+		return
+	}
+	threshold, cooldown := s.circuitConfig()
+	req := kernelctl.ReportReq{
+		TraceID:                traceID,
+		CircuitThreshold:       threshold,
+		CircuitCooldownBaseSec: int64(cooldown.Seconds()),
+		HealthWindowSec:        int64(s.config.HealthWindow.Seconds()),
+		Results:                items,
+	}
+	resp, ok := s.kernel.Report(ctx, req)
+	if !ok {
+		return // 降级丢弃：反馈丢失非致命
+	}
+	// echo 熔断器变更回写 upstream_keys（Rust 已持久化到 kernel.db，此处同步 Go 侧 SQLite）
+	for _, ch := range resp.KeyBreakerChanges {
+		_ = s.store.UpdateUpstreamKeyStatus(ctx, ch.KeyID, ch.Status, ch.ConsecutiveFail, ch.CoolingUntil)
 	}
 }
 

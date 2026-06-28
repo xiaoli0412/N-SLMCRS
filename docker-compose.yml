@@ -3,7 +3,7 @@
 # 启动：
 #   docker compose up -d            # 本地已 build 或服务器已 pull 时
 #   docker compose build            # 本地构建（开发用）
-#   TAG=v0.11.0 docker compose pull  # 服务器从 ghcr 拉取已发布镜像
+#   TAG=v0.12.0 docker compose pull  # 服务器从 ghcr 拉取已发布镜像
 #
 # 生产部署（scripts/deploy.sh 自动执行）：
 #   git pull && docker compose pull && docker compose up -d
@@ -15,7 +15,7 @@
 services:
   gateway:
     build: .
-    image: ghcr.io/xiaoli0412/n-slmcrs-gateway:${TAG:-v0.11.0}
+    image: ghcr.io/xiaoli0412/n-slmcrs-gateway:${TAG:-v0.12.0}
     container_name: nslmcrs-gateway
     restart: unless-stopped
     ports:
@@ -28,6 +28,8 @@ services:
       GIN_MODE: release
       # 指向 Rust 内核 sidecar（容器名:端口）；不可用时自动降级
       KERNEL_URL: http://kernel:8790
+      # 热路径 fail-closed（0=降级/1=硬依赖；浸泡期保持 0）
+      KERNEL_FAIL_CLOSED: ${KERNEL_FAIL_CLOSED:-0}
       # 备份目录落在持久卷上，容器重建后备份仍在
       BACKUP_DIR: /data/backups
     volumes:
@@ -48,17 +50,23 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Rust 内核 sidecar：Holt-Winters 预测 + 可用度聚合（数值密集计算）。
-  # 网关不可达此服务时降级回内置 Go 实现，故 healthcheck 失败不阻断网关。
+  # Rust 内核 sidecar（v0.12 全量控制面）：/reserve 准入 + /report 反馈 + /verdict 判定。
+  # v0.12 起持有令牌桶/健康窗/熔断器为权威状态，熔断器态 + 子决策审计持久化到 /data/kernel.db。
+  # 网关不可达此服务时降级回内置 Go 实现（KERNEL_FAIL_CLOSED=0 时），故 healthcheck 失败不阻断网关。
   kernel:
     build:
       context: .
       dockerfile: Dockerfile.kernel
-    image: ghcr.io/xiaoli0412/n-slmcrs-kernel:${TAG:-v0.11.0}
+    image: ghcr.io/xiaoli0412/n-slmcrs-kernel:${TAG:-v0.12.0}
     container_name: nslmcrs-kernel
     restart: unless-stopped
     expose:
       - "8790"
+    environment:
+      # 自有 SQLite 库（熔断器态 + 子决策审计），落在持久卷上
+      KERNEL_DB_PATH: /data/kernel.db
+    volumes:
+      - kernel-data:/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8790/healthz"]
       interval: 30s
@@ -73,4 +81,6 @@ services:
 
 volumes:
   nslmcrs-data:
+    driver: local
+  kernel-data:
     driver: local
