@@ -4,7 +4,7 @@
 # 作为独立容器运行；Go 网关经 HTTP/JSON 调用，不可达时降级回内置 Go 实现。
 #
 # 用法：
-#   docker build -f Dockerfile.kernel -t ghcr.io/xiaoli0412/n-slmcrs-kernel:latest -t ghcr.io/xiaoli0412/n-slmcrs-kernel:v0.10.0 .
+#   docker build -f Dockerfile.kernel -t ghcr.io/xiaoli0412/n-slmcrs-kernel:latest -t ghcr.io/xiaoli0412/n-slmcrs-kernel:v0.11.0 .
 
 # ───────────────── 阶段一：Rust 构建 ─────────────────
 FROM rust:1.83-alpine AS builder

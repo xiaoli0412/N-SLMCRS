@@ -6,11 +6,19 @@
   <img alt="Go" src="https://img.shields.io/badge/Go-1.25-76b900?logo=go&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-pure--Go-003b57?logo=sqlite&logoColor=white">
-  <img alt="License" src="https://img.shields.io/badge/status-v0.10.0-76b900">
-  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.10.0-76b900?logo=github&logoColor=white"></a>
+  <img alt="License" src="https://img.shields.io/badge/status-v0.11.0-76b900">
+  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.11.0-76b900?logo=github&logoColor=white"></a>
 </p>
 
-> 📦 **最新发布 [v0.10.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.10.0)** — 集成钩子（Webhook 事件回调 + new-api/sapi 渠道对接）· 日志文件落盘 · Distribution 页真实化。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
+> 📦 **最新发布 [v0.11.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.11.0)** — 内置 Chat 测试台 · Rust 决策计算下沉 · 基础铺路（日志 !BADKEY 修复 + ratelimit/modelhealth 单测 + CI 升级）。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
+
+---
+
+## 🆕 v0.11.0 亮点
+
+- 💬 **内置 Chat 测试台（Playground）**：管理面板新增仿 NVIDIA Studio 的对话测试页——模型选择 + 系统提示 + temperature/max_tokens + 流式开关；管理凭证直调调度器（复用 N 路并发 + 熔断 + 限流，绕过下游凭证），SSE 逐 token 渲染、延迟/token 用量展示。`POST /api/admin/playground/chat`。
+- 🦀 **决策计算下沉 Rust sidecar**：kernel-rs 新增无状态端点 `/verdict`（模型健康三态判定）、`/weighted-score`（调度加权评分）、`/circuit-check`（按 Key 熔断阈值检查），与 Go 侧数值对齐；`/verdict` 接入 `modelhealth.Sweeper.applyVerdict`（慢路径，不可达降级回 Go）。新增 `internal/kernelctl` 客户端（1s 超时快失败降级）。热路径（限流桶 / 按 Key 熔断 / weighted-shuffle）保留 Go，留待 v0.12 `/reserve` 批量化。
+- 🧪 **基础铺路**：修复 gateway 请求日志 `!BADKEY` 格式 bug（请求行误占 slog key 位）；补 `ratelimit`（TokenBucket/SlidingWindow/HealthTracker）与 `modelhealth`（applyVerdict/nextCooldown/interfacesFor 等）单元测试——此前两块零覆盖，为后续 Rust 化建回归护栏；CI actions 升级（checkout@v5 / setup-node@v5 / setup-go@v6）消除 Node-20 deprecation。
 
 ---
 
@@ -387,7 +395,7 @@ curl http://localhost:8787/api/admin/autopilot/state -H "X-Admin-Token: $ADMIN_T
 
 **后续** — 生态集成
 - kernel 可用度聚合 Go 侧接入（`/availability` 端点契约就绪，待跨层打通）+ 注册表 id 归一化收敛
-- new-api / sapi / Webhook 集成钩子落地（v0.10）；Rust 化子系统（熔断状态机/限流/健康聚合迁入 kernel-rs，v0.11）
+- new-api / sapi / Webhook 集成钩子落地（v0.10）；决策计算下沉 kernel-rs（/verdict 接入慢路径，v0.11）；全量 Rust 控制面（限流桶+熔断+健康聚合权威化、/reserve 批量化、kernel 硬依赖 fail-closed，v0.12）
 - 内置 Chat 测试台（仿 NVIDIA Studio）
 - 上游密钥应用层加密
 

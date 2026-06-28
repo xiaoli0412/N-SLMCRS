@@ -1,15 +1,15 @@
-# N-SLMCRS Gateway Makefile（v0.10.0）
+# N-SLMCRS Gateway Makefile（v0.11.0）
 #
 # 常用：
 #   make build        # 构建前端 + Go 二进制到 bin/gateway
 #   make test         # go test ./...
 #   make vet          # go vet ./...
-#   make publish TAG=v0.10.0   # 本地构建双 Docker 镜像并推 ghcr（latest + TAG）
-#   make deploy TAG=v0.10.0    # 发布后部署到服务器（= scripts/deploy.sh）
+#   make publish TAG=v0.11.0   # 本地构建双 Docker 镜像并推 ghcr（latest + TAG）
+#   make deploy TAG=v0.11.0    # 发布后部署到服务器（= scripts/deploy.sh）
 #
 # Windows 下需 Git Bash / WSL；目标按 sh 语法书写。
 
-VERSION ?= v0.10.0
+VERSION ?= v0.11.0
 GATEWAY_IMG ?= ghcr.io/xiaoli0412/n-slmcrs-gateway
 KERNEL_IMG   ?= ghcr.io/xiaoli0412/n-slmcrs-kernel
 GO           ?= go
