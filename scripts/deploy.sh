@@ -78,7 +78,9 @@ echo "▸ [4/4] 健康检查…"
 ok=0
 for _ in $(seq 1 30); do
   g=$(ssh_ok "curl -fsS http://localhost:8787/health 2>/dev/null || true")
-  k=$(ssh_ok "curl -fsS http://localhost:8790/healthz 2>/dev/null || true")
+  # kernel 8790 仅 expose 给容器间（未 publish 到主机），故经 docker exec 探测，
+  # 复用其自身 healthcheck 命令（wget -qO- http://127.0.0.1:8790/healthz → "ok"）。
+  k=$(ssh_ok "docker exec nslmcrs-kernel wget -qO- http://127.0.0.1:8790/healthz 2>/dev/null || true")
   if [[ "$g" == *'"status":"ok"'* && "$k" == "ok" ]]; then
     echo "  gateway /health: $g"
     echo "  kernel   /healthz: $k"
