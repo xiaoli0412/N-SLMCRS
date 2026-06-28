@@ -39,9 +39,9 @@ import (
 	"github.com/nslmcrs/gateway/internal/upstream"
 )
 
-// version 通过 -ldflags "-X main.version=..." 注入（Dockerfile 默认注入 v0.11.0）；
+// version 通过 -ldflags "-X main.version=..." 注入（Dockerfile 默认注入 v0.12.0）；
 // go run 直跑时回退到此默认值，保持与前端 package.json 一致。
-var version = "v0.11.0"
+var version = "v0.12.0"
 
 func main() {
 	// -version：打印版本后退出（供 Docker healthcheck 与运维探活使用）
@@ -114,6 +114,9 @@ func main() {
 		Events: cfg.Hooks.WebhookEvents,
 	})
 	sched.SetWebhook(webhook)
+	// v0.12：注入 Rust sidecar 客户端，启用 /reserve + /report 控制面权威化
+	// （KERNEL_FAIL_CLOSED=1 时热路径硬依赖；不可达自动降级回 Go）
+	sched.SetKernel(kernelctl.NewFromEnv())
 	apCtrl := autopilot.NewController(store, health, rlMgr, apRuntime,
 		2*time.Minute, cfg.Scheduler.DefaultConcurrency, cfg.Scheduler.MaxConcurrency,
 		autopilot.LLMConfig{BaseURL: cfg.AutoPilot.LLMBaseURL, APIKey: cfg.AutoPilot.LLMAPIKey, Model: cfg.AutoPilot.LLMModel})
