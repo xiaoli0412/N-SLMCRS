@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,9 +31,9 @@ const (
 
 // Client NVIDIA API 客户端。
 type Client struct {
-	chatHTTP     *http.Client // integrate.api.nvidia.com
-	retrievalHTTP *http.Client // ai.api.nvidia.com
-	chatBaseURL   string
+	chatHTTP         *http.Client // integrate.api.nvidia.com
+	retrievalHTTP    *http.Client // ai.api.nvidia.com
+	chatBaseURL      string
 	retrievalBaseURL string
 }
 
@@ -209,17 +210,21 @@ func (r *Response) IsClientError() bool { return r.StatusCode >= 400 && r.Status
 // IsServerError 判断是否服务端错误（5xx）。
 func (r *Response) IsServerError() bool { return r.StatusCode >= 500 }
 
-// RateLimitRemaining 从 X-RateLimit-Remaining 头获取剩余配额。-1 表示头不存在。
+// RateLimitRemaining 从 X-RateLimit-Remaining 头获取剩余配额。
+// 头缺失或无法解析为整数时返回 -1（表示「无可用信号」，调用方据此跳过校准）。
+// 注意：旧实现手写逐字符累加，非数字头会静默返回 0，进而把令牌桶校准为 0、
+// 误杀健康 Key——此处改用 strconv.Atoi，解析失败一律返回 -1。
 func (r *Response) RateLimitRemaining() int {
 	v := r.Header.Get("X-RateLimit-Remaining")
 	if v == "" {
 		return -1
 	}
-	n := 0
-	for _, c := range []byte(v) {
-		if c >= '0' && c <= '9' {
-			n = n*10 + int(c-'0')
-		}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return -1
+	}
+	if n < 0 {
+		return -1
 	}
 	return n
 }
@@ -245,7 +250,7 @@ func (r *Response) ParseNVIDIAError() *NVIDIAError {
 
 // ModelsResponse /v1/models 响应。
 type ModelsResponse struct {
-	Object string   `json:"object"`
+	Object string  `json:"object"`
 	Data   []Model `json:"data"`
 }
 

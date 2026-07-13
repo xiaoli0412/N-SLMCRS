@@ -6,11 +6,30 @@
   <img alt="Go" src="https://img.shields.io/badge/Go-1.25-76b900?logo=go&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-pure--Go-003b57?logo=sqlite&logoColor=white">
-  <img alt="License" src="https://img.shields.io/badge/status-v0.12.0-76b900">
-  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.12.0-76b900?logo=github&logoColor=white"></a>
+  <img alt="License" src="https://img.shields.io/badge/status-v0.14.0-76b900">
+  <a href="https://github.com/xiaoli0412/N-SLMCRS/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.14.0-76b900?logo=github&logoColor=white"></a>
 </p>
 
-> 📦 **最新发布 [v0.12.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.12.0)** — 全量 Rust 控制面权威化（/reserve 准入 + /report 反馈 + 持久化子决策 + flag-gated fail-closed）。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
+> 📦 **最新发布 [v0.14.0](https://github.com/xiaoli0412/N-SLMCRS/releases/tag/v0.14.0)** — 策略引擎 + 日志中心重构：Rust 内核权威的命名调度策略（保守护航/均衡/极速/均轮/自适应，切换即改变选择算法+扇出+RPM 头寸+熔断），UI 卡片直观感受策略性格与底层逻辑；日志中心根治级别大小写 bug、补游标分页/审计日志 UI/批量写入/留存清理。完整版本历程见 [Releases](https://github.com/xiaoli0412/N-SLMCRS/releases)。
+
+---
+
+## 🆕 v0.14.0 亮点
+
+- 🧠 **策略引擎（Rust 内核权威）**：把焊死的「加权随机 + N 路先到先得 + 阈值熔断 + 满容量桶」四旋钮拆成可切换的命名预设，每预设从其场景矛盾推导参数（"内化深化底部逻辑"）：
+  - **保守护航/Guardian**（密钥≤3）：StrictPriority 永远先打最健康 + 扇出 1（零 loser 浪费）+ 宽容熔断（阈值 20）+ 80% RPM 头寸——不死不烧最省。
+  - **均衡/Balanced**（默认）：加权随机 + 标准熔断 + 满容量。
+  - **极速/Velocity**（密钥≥8）：LeastInflight 降 P99 + 高扇出先到先得。
+  - **均轮/Fairshare**（批处理）：RoundRobin 最大化聚合 RPM 利用率 + 扇出 1 零浪费。
+  - **自适应/Adaptive**：Auto-Pilot 30s 控制环注入权重。
+  - `/reserve` 按活跃策略选择算法派发；新增 `GET/PUT /strategy` 端点；UI 卡片网格 + 切换差异面板 + 按密钥数推荐徽章，切换即直观感受。
+- 📋 **日志中心重构**：根治**级别大小写 bug**（slog 存大写 INFO、autopilot 存小写，混存致前端级别筛选只命中部分行——统一小写落库+查询 `lower()` 兼容历史）；**游标分页**（`before_ts/before_id` "加载更多"，替旧版硬取最后 200 行）；**审计日志 UI**（完整后端此前零前端消费——新增审计 Tab）；source 枚举对齐实际发射值；绝对/相对时间切换；trace_id 点击即筛选；React key 改 `id`；**批量写入**（单写者 drain 收敛旧版"每行一 goroutine 各自 INSERT"的 SQLite 写争用）；**留存清理**（每日裁剪超期日志）。
+- 🛡️ **降级路径镜像**：策略切换时熔断参数同步到调度器配置 + Settings 持久化，kernel 不可达的降级路径镜像同一选择算法（RoundRobin/StrictPriority/LeastInflight 在 Go 实现，与 Rust 对齐）。
+
+### 后续规划（基础设施已铺，待增量落地）
+- 上游密钥应用层加密（AES-GCM + `key_hash` 列保 UNIQUE 去重 + 启动迁移）。
+- 响应缓存（内存 LRU，按 model+messages hash）+ 下游凭证用量配额（吸收 LiteLLM/One-API）。
+- 调度重试/降级链 + Rust kernel 锁粒度优化（SQLite 写移出热路径临界区）。
 
 ---
 

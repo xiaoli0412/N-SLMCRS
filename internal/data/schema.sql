@@ -174,3 +174,16 @@ CREATE TABLE IF NOT EXISTS settings (
     value           TEXT NOT NULL,
     updated_at      INTEGER NOT NULL
 );
+
+-- 管理操作审计日志（v0.13：企业合规——敏感写操作留痕，可追溯 who/what/when）
+-- 覆盖：密钥增删改、凭证签发/删除、设置变更、改密、渠道增删、熔断复位。
+CREATE TABLE IF NOT EXISTS audit_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              INTEGER NOT NULL,                 -- 操作时间戳（秒）
+    actor           TEXT    DEFAULT '',               -- 操作者（admin 令牌掩码）
+    action          TEXT    NOT NULL,                 -- 动作分类，如 key.add / credential.issue / settings.update
+    detail          TEXT    DEFAULT '',               -- JSON 附加上下文（key_id / count / 字段等）
+    ip              TEXT    DEFAULT ''                 -- 来源 IP
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts);
+CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action, ts);

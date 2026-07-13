@@ -43,3 +43,6 @@ scripts/rscp.sh
 
 # 本地发布产物
 /dist/
+
+# 本地 ZCode 会话目录（不提交）
+.zcode/

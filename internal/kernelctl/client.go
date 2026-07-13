@@ -25,8 +25,8 @@ import (
 
 // Client 调用 Rust sidecar 做策略决策计算。
 type Client struct {
-	baseURL     string
-	http        *http.Client
+	baseURL    string
+	http       *http.Client
 	failClosed bool // KERNEL_FAIL_CLOSED=1：/reserve 不可达即拒绝准入（硬依赖）
 }
 
@@ -36,6 +36,24 @@ func (c *Client) FailClosed() bool {
 		return false
 	}
 	return c.failClosed
+}
+
+// Health 探测 sidecar 是否存活（GET /healthz）。用于 /readyz 就绪检查。
+// c 为 nil（纯 Go 模式）时返回 true——无 sidecar 依赖即视为健康，不阻断就绪。
+func (c *Client) Health(ctx context.Context) bool {
+	if c == nil {
+		return true
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/healthz", nil)
+	if err != nil {
+		return false
+	}
+	r, err := c.http.Do(req)
+	if err != nil {
+		return false
+	}
+	defer r.Body.Close()
+	return r.StatusCode == http.StatusOK
 }
 
 // VerdictResult 模型健康判定结果（与 kernel-rs VerdictResp 契约对齐）。
@@ -65,8 +83,8 @@ func NewFromEnv() *Client {
 		url = "http://127.0.0.1:8790"
 	}
 	return &Client{
-		baseURL:     url,
-		http:        &http.Client{Timeout: 1 * time.Second},
+		baseURL:    url,
+		http:       &http.Client{Timeout: 1 * time.Second},
 		failClosed: os.Getenv("KERNEL_FAIL_CLOSED") == "1",
 	}
 }
@@ -98,13 +116,13 @@ func (c *Client) Verdict(ctx context.Context, successRate int, currentState stri
 	floor, threshold, badToPerm int, cooldownBaseSec int64) (VerdictResult, bool) {
 	var resp VerdictResult
 	req := struct {
-		SuccessRate      int    `json:"success_rate"`
-		CurrentState     string `json:"current_state"`
-		BadSweepCount    int    `json:"bad_sweep_count"`
-		Floor            int    `json:"floor"`
-		Threshold        int    `json:"threshold"`
-		BadToPerm        int    `json:"bad_to_perm"`
-		CooldownBaseSec  int64  `json:"cooldown_base_sec"`
+		SuccessRate     int    `json:"success_rate"`
+		CurrentState    string `json:"current_state"`
+		BadSweepCount   int    `json:"bad_sweep_count"`
+		Floor           int    `json:"floor"`
+		Threshold       int    `json:"threshold"`
+		BadToPerm       int    `json:"bad_to_perm"`
+		CooldownBaseSec int64  `json:"cooldown_base_sec"`
 	}{
 		SuccessRate: successRate, CurrentState: currentState, BadSweepCount: badSweep,
 		Floor: floor, Threshold: threshold, BadToPerm: badToPerm, CooldownBaseSec: cooldownBaseSec,
@@ -121,9 +139,9 @@ func (c *Client) WeightedScore(ctx context.Context, successRate float64, consec 
 		Score float64 `json:"score"`
 	}
 	req := struct {
-		SuccessRate    float64 `json:"success_rate"`
-		ConsecutiveFail int    `json:"consecutive_fail"`
-		WeightBoost    float64 `json:"weight_boost"`
+		SuccessRate     float64 `json:"success_rate"`
+		ConsecutiveFail int     `json:"consecutive_fail"`
+		WeightBoost     float64 `json:"weight_boost"`
 	}{SuccessRate: successRate, ConsecutiveFail: consec, WeightBoost: boost}
 	if !c.post(ctx, "/weighted-score", req, &resp) {
 		return 0, false
@@ -135,10 +153,10 @@ func (c *Client) WeightedScore(ctx context.Context, successRate float64, consec 
 func (c *Client) CircuitCheck(ctx context.Context, consec, threshold int, baseCooldownSec int64) (CircuitCheckResult, bool) {
 	var resp CircuitCheckResult
 	req := struct {
-		ConsecutiveFail  int   `json:"consecutive_fail"`
-		Threshold        int   `json:"threshold"`
-		BaseCooldownSec  int64 `json:"base_cooldown_sec"`
-		}{ConsecutiveFail: consec, Threshold: threshold, BaseCooldownSec: baseCooldownSec}
+		ConsecutiveFail int   `json:"consecutive_fail"`
+		Threshold       int   `json:"threshold"`
+		BaseCooldownSec int64 `json:"base_cooldown_sec"`
+	}{ConsecutiveFail: consec, Threshold: threshold, BaseCooldownSec: baseCooldownSec}
 	if !c.post(ctx, "/circuit-check", req, &resp) {
 		return CircuitCheckResult{}, false
 	}
@@ -152,6 +170,8 @@ type Candidate struct {
 	KeyID       int64   `json:"key_id"`
 	RPM         int     `json:"rpm"`
 	WeightBoost float64 `json:"weight_boost"`
+	// v0.14：该 Key 当前在途请求数（调度器维护，LeastInflight 策略排序用）。
+	Inflight int64 `json:"inflight,omitempty"`
 }
 
 // ReserveReq /reserve 入参（与 kernel-rs ReserveReq 契约对齐）。
@@ -175,9 +195,9 @@ type KeyBreakerChange struct {
 
 // ReserveResp /reserve 响应（与 kernel-rs ReserveResp 契约对齐）。
 type ReserveResp struct {
-	TraceID             string              `json:"trace_id"`
-	Reserved            []int64             `json:"reserved"` // 有序 key_id（已消费令牌）
-	KeyBreakerChanges   []KeyBreakerChange  `json:"key_breaker_changes"`
+	TraceID           string             `json:"trace_id"`
+	Reserved          []int64            `json:"reserved"` // 有序 key_id（已消费令牌）
+	KeyBreakerChanges []KeyBreakerChange `json:"key_breaker_changes"`
 }
 
 // Reserve 批量准入：选 Key + 令牌消费 + 加权随机排序（1 次 RPC/请求）。
@@ -192,19 +212,19 @@ func (c *Client) Reserve(ctx context.Context, req ReserveReq) (ReserveResp, bool
 
 // ReportItem /report 单 Key 结果。
 type ReportItem struct {
-	KeyID               int64  `json:"key_id"`
-	Success             bool   `json:"success"`
-	Status              string `json:"status"` // success | error | rate_limited
-	RateLimitRemaining  *int64 `json:"rate_limit_remaining,omitempty"`
+	KeyID              int64  `json:"key_id"`
+	Success            bool   `json:"success"`
+	Status             string `json:"status"` // success | error | rate_limited
+	RateLimitRemaining *int64 `json:"rate_limit_remaining,omitempty"`
 }
 
 // ReportReq /report 入参（与 kernel-rs ReportReq 契约对齐）。
 type ReportReq struct {
-	TraceID                string        `json:"trace_id"`
-	CircuitThreshold       int           `json:"circuit_threshold"`
-	CircuitCooldownBaseSec int64         `json:"circuit_cooldown_base_sec"`
-	HealthWindowSec        int64         `json:"health_window_sec"`
-	Results                []ReportItem  `json:"results"`
+	TraceID                string       `json:"trace_id"`
+	CircuitThreshold       int          `json:"circuit_threshold"`
+	CircuitCooldownBaseSec int64        `json:"circuit_cooldown_base_sec"`
+	HealthWindowSec        int64        `json:"health_window_sec"`
+	Results                []ReportItem `json:"results"`
 }
 
 // ReportResp /report 响应（与 kernel-rs ReportResp 契约对齐）。
@@ -219,6 +239,91 @@ func (c *Client) Report(ctx context.Context, req ReportReq) (ReportResp, bool) {
 	var resp ReportResp
 	if !c.post(ctx, "/report", req, &resp) {
 		return ReportResp{}, false
+	}
+	return resp, true
+}
+
+// ─── v0.14 策略引擎：GET/PUT /strategy ─────────────────────────────────
+
+// StrategyPreset 命名策略（与 kernel-rs Strategy 契约对齐）。
+type StrategyPreset struct {
+	ID                 string  `json:"id"`
+	Icon               string  `json:"icon"`
+	NameZh             string  `json:"name_zh"`
+	NameEn             string  `json:"name_en"`
+	CharacterZh        string  `json:"character_zh"`
+	CharacterEn        string  `json:"character_en"`
+	Selection          string  `json:"selection"` // weighted_random|round_robin|least_inflight|strict_priority
+	Fanout             int     `json:"fanout"`     // >0 覆盖 concurrency；=0 用调用方
+	BreakerThreshold   int     `json:"breaker_threshold"`
+	BreakerCooldownSec int64   `json:"breaker_cooldown_sec"`
+	RPMHeadroom        float64 `json:"rpm_headroom"` // 0..1，准入地板=cap×(1-headroom)
+	MinKeys            int     `json:"min_keys"`
+	MaxKeys            int     `json:"max_keys"`
+	ScenarioZh         string  `json:"scenario_zh"`
+	ScenarioEn         string  `json:"scenario_en"`
+}
+
+// StrategyState GET /strategy 响应：活跃策略 + 全部预设 + 按密钥数推荐。
+type StrategyState struct {
+	Active      StrategyPreset   `json:"active"`
+	Presets     []StrategyPreset `json:"presets"`
+	Recommended string            `json:"recommended"`
+}
+
+// get 通用 GET JSON；返回 ok=false 表示 sidecar 不可达。
+func (c *Client) get(ctx context.Context, path string, resp any) bool {
+	if c == nil {
+		return false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return false
+	}
+	r, err := c.http.Do(req)
+	if err != nil {
+		return false
+	}
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		return false
+	}
+	return json.NewDecoder(r.Body).Decode(resp) == nil
+}
+
+// GetStrategy 查询活跃策略 + 全部预设 + 推荐（按当前密钥数）。
+func (c *Client) GetStrategy(ctx context.Context) (StrategyState, bool) {
+	var resp StrategyState
+	if !c.get(ctx, "/strategy", &resp) {
+		return StrategyState{}, false
+	}
+	return resp, true
+}
+
+// SetStrategy 设置活跃策略（PUT /strategy）。未知 id 返回 ok=false。
+func (c *Client) SetStrategy(ctx context.Context, id string) (StrategyState, bool) {
+	if c == nil {
+		return StrategyState{}, false
+	}
+	body, _ := json.Marshal(struct {
+		ID string `json:"id"`
+	}{ID: id})
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, c.baseURL+"/strategy", bytes.NewReader(body))
+	if err != nil {
+		return StrategyState{}, false
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	r, err := c.http.Do(httpReq)
+	if err != nil {
+		return StrategyState{}, false
+	}
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		return StrategyState{}, false
+	}
+	var resp StrategyState
+	if json.NewDecoder(r.Body).Decode(&resp) != nil {
+		return StrategyState{}, false
 	}
 	return resp, true
 }

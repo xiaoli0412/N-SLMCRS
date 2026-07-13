@@ -1,24 +1,92 @@
+// v0.13 安全硬化：admin token 由 localStorage 迁 sessionStorage（关闭标签即清除，
+// 降低 XSS 残留风险）+ 30min 滑动过期（每次成功请求续期，超时自动失效）。
+// 401 全局拦截：已持令牌却收到 401 = 会话过期 → 清除 + 跳登录（登录请求本身无令牌，
+// 401 为凭据错误，交由调用方 onError 处理，不触发自动登出）。
 const TOKEN_KEY = 'admin_token'
+const TOKEN_TS_KEY = 'admin_token_ts'
+const SESSION_TTL_MS = 30 * 60 * 1000 // 30 分钟
+const REQUEST_TIMEOUT_MS = 30 * 1000 // 普通请求 30s 超时（流式 playground 自带 signal）
 
 export function getToken(): string {
-  return localStorage.getItem(TOKEN_KEY) || ''
+  const t = sessionStorage.getItem(TOKEN_KEY)
+  if (!t) return ''
+  // 滑动过期：超过 TTL 视为失效，清除
+  const ts = Number(sessionStorage.getItem(TOKEN_TS_KEY) || 0)
+  if (ts && Date.now() - ts > SESSION_TTL_MS) {
+    clearToken()
+    return ''
+  }
+  return t
 }
+
 export function setToken(t: string) {
-  localStorage.setItem(TOKEN_KEY, t)
+  sessionStorage.setItem(TOKEN_KEY, t)
+  sessionStorage.setItem(TOKEN_TS_KEY, String(Date.now()))
 }
+
+/** 续期：成功响应后调用，把 TTL 窗口向后滑动。 */
+export function touchToken() {
+  if (sessionStorage.getItem(TOKEN_KEY)) {
+    sessionStorage.setItem(TOKEN_TS_KEY, String(Date.now()))
+  }
+}
+
 export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY)
+  sessionStorage.removeItem(TOKEN_KEY)
+  sessionStorage.removeItem(TOKEN_TS_KEY)
+}
+
+/** 会话过期：清除令牌并回到登录页（LoginGate 会在无令牌时渲染登录框）。 */
+function onSessionExpired() {
+  clearToken()
+  // 用 replace 避免历史回退到已失效的会话页
+  if (location.pathname !== '/') location.replace('/')
+  else location.reload()
+}
+
+function mergeHeaders(
+  base: Record<string, string>,
+  init?: HeadersInit,
+): Record<string, string> {
+  if (!init) return base
+  const out = { ...base }
+  if (init instanceof Headers) {
+    init.forEach((v, k) => (out[k] = v))
+  } else if (Array.isArray(init)) {
+    for (const [k, v] of init) out[k] = v
+  } else {
+    Object.assign(out, init as Record<string, string>)
+  }
+  return out
+}
+
+/** 带超时的 fetch 包装（流式端点自行管理 signal，不套此超时）。 */
+function fetchWithTimeout(
+  path: string,
+  opts: RequestInit,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<Response> {
+  if (opts.signal) return fetch(path, opts) // 调用方自管 AbortSignal
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  return fetch(path, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer))
 }
 
 async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const t = getToken()
   if (t) headers['X-Admin-Token'] = t
-  const res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers as any) } })
+  const res = await fetchWithTimeout(path, { ...opts, headers: mergeHeaders(headers, opts.headers) })
+  // 全局 401：持令牌却 401 = 会话过期；登录请求无令牌，其 401 交调用方处理
+  if (res.status === 401 && t) {
+    onSessionExpired()
+    throw new Error('会话已过期，请重新登录')
+  }
   if (!res.ok) {
     const txt = await res.text().catch(() => res.statusText)
     throw new Error(`${res.status}: ${txt}`)
   }
+  touchToken() // 成功响应续期滑动会话
   if (res.status === 204) return undefined as T
   return res.json()
 }
@@ -27,8 +95,13 @@ async function requestBlob(path: string, opts: RequestInit = {}): Promise<Blob> 
   const headers: Record<string, string> = {}
   const t = getToken()
   if (t) headers['X-Admin-Token'] = t
-  const res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers as any) } })
+  const res = await fetchWithTimeout(path, { ...opts, headers: mergeHeaders(headers, opts.headers) })
+  if (res.status === 401 && t) {
+    onSessionExpired()
+    throw new Error('会话已过期，请重新登录')
+  }
   if (!res.ok) throw new Error(`${res.status}`)
+  touchToken()
   return res.blob()
 }
 
@@ -281,12 +354,50 @@ export interface BackupInfo {
 }
 
 export interface AppLog {
+  id: number
   ts: number
   trace_id: string
   level: string
   source: string
   message: string
   context: string
+}
+
+// v0.14 审计日志
+export interface AuditEntry {
+  id: number
+  ts: number
+  actor: string
+  action: string
+  detail: string
+  ip: string
+}
+
+// v0.14 策略引擎
+export interface StrategyPreset {
+  id: string
+  icon: string
+  name_zh: string
+  name_en: string
+  character_zh: string
+  character_en: string
+  selection: string // weighted_random|round_robin|least_inflight|strict_priority
+  fanout: number
+  breaker_threshold: number
+  breaker_cooldown_sec: number
+  rpm_headroom: number
+  min_keys: number
+  max_keys: number
+  scenario_zh: string
+  scenario_en: string
+}
+
+export interface StrategyState {
+  active: StrategyPreset
+  presets: StrategyPreset[]
+  recommended: string
+  key_count: number
+  kernel_online: boolean
 }
 
 export const api = {
@@ -379,6 +490,10 @@ export const api = {
     const res = await fetch('/api/admin/playground/chat', {
       method: 'POST', headers, body: JSON.stringify({ ...body, stream: true }), signal,
     })
+    if (res.status === 401 && t) {
+      onSessionExpired()
+      throw new Error('会话已过期，请重新登录')
+    }
     if (!res.ok) {
       const txt = await res.text().catch(() => res.statusText)
       throw new Error(`${res.status}: ${txt}`)
@@ -421,6 +536,12 @@ export const api = {
     }),
 
   getLogs: (params: string) => request<{ data: AppLog[] }>(`/api/admin/logs${params}`),
+  getAudit: (params: string) => request<{ data: AuditEntry[] }>(`/api/admin/audit${params}`),
+
+  // v0.14 策略引擎
+  getStrategy: () => request<StrategyState>('/api/admin/strategy'),
+  setStrategy: (id: string) =>
+    request<StrategyState>('/api/admin/strategy', { method: 'PUT', body: JSON.stringify({ id }) }),
 
   getAutopilotState: () => request<AutoPilotState>('/api/admin/autopilot/state'),
   getAutopilotSnapshot: () => request<AutoPilotSnapshot>('/api/admin/autopilot/snapshot'),

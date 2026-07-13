@@ -2,42 +2,49 @@
 //
 // 鉴权：默认初始令牌 admin，首次登录后强制改密并写入 bcrypt 哈希（admin:token_hash）。
 // 鉴权端点（无需常规中间件）：
-//   POST /api/admin/login             校验令牌，返回 must_change_password
-//   POST /api/admin/change-password   修改令牌（写入 bcrypt 哈希，旧默认令牌失效）
-//   GET  /api/admin/auth/status       探测是否需强制改密
+//
+//	POST /api/admin/login             校验令牌，返回 must_change_password
+//	POST /api/admin/change-password   修改令牌（写入 bcrypt 哈希，旧默认令牌失效）
+//	GET  /api/admin/auth/status       探测是否需强制改密
+//
 // Phase 1 端点（受 AuthMiddleware 保护）：
-//   GET    /api/admin/keys              列出上游密钥
-//   POST   /api/admin/keys              新增上游密钥
-//   DELETE /api/admin/keys/:id          删除上游密钥
-//   PATCH  /api/admin/keys/:id          更新（启用/停用）
-//   GET    /api/admin/credentials        列出下游凭证
-//   POST   /api/admin/credentials        新增下游凭证
-//   DELETE /api/admin/credentials/:id    删除下游凭证
-//   GET    /api/admin/metrics            聚合指标（?window=1h|24h|7d）
-//   GET    /api/admin/timeseries         时序曲线（?window=1h&bucket=60）
-//   GET    /api/admin/key-health         每 Key 健康
-//   GET    /api/admin/models             模型目录（含失效）
-//   GET    /api/admin/models/plaza        模型广场视图（capability 过滤 + 用量统计 + 可用度）
-//   POST   /api/admin/models/sync         立即同步模型
-//   POST   /api/admin/models/test         探活单个模型（可用度测试）
-//   POST   /api/admin/models/probe-all     探活所有 chat 模型
-//   GET    /api/admin/settings            读取熔断/调度运行时配置
-//   PUT    /api/admin/settings            更新熔断/调度运行时配置（落库 + 热生效）
-//   GET    /api/admin/logs               查询日志
-//   GET    /api/admin/backup             列出数据库备份
-//   POST   /api/admin/backup             立即备份（VACUUM INTO 快照）
-//   GET    /api/admin/backup/:file       下载备份文件
-//   DELETE /api/admin/backup/:file       删除备份文件
+//
+//	GET    /api/admin/keys              列出上游密钥
+//	POST   /api/admin/keys              新增上游密钥
+//	DELETE /api/admin/keys/:id          删除上游密钥
+//	PATCH  /api/admin/keys/:id          更新（启用/停用）
+//	GET    /api/admin/credentials        列出下游凭证
+//	POST   /api/admin/credentials        新增下游凭证
+//	DELETE /api/admin/credentials/:id    删除下游凭证
+//	GET    /api/admin/metrics            聚合指标（?window=1h|24h|7d）
+//	GET    /api/admin/timeseries         时序曲线（?window=1h&bucket=60）
+//	GET    /api/admin/key-health         每 Key 健康
+//	GET    /api/admin/models             模型目录（含失效）
+//	GET    /api/admin/models/plaza        模型广场视图（capability 过滤 + 用量统计 + 可用度）
+//	POST   /api/admin/models/sync         立即同步模型
+//	POST   /api/admin/models/test         探活单个模型（可用度测试）
+//	POST   /api/admin/models/probe-all     探活所有 chat 模型
+//	GET    /api/admin/settings            读取熔断/调度运行时配置
+//	PUT    /api/admin/settings            更新熔断/调度运行时配置（落库 + 热生效）
+//	GET    /api/admin/logs               查询日志
+//	GET    /api/admin/backup             列出数据库备份
+//	POST   /api/admin/backup             立即备份（VACUUM INTO 快照）
+//	GET    /api/admin/backup/:file       下载备份文件
+//	DELETE /api/admin/backup/:file       删除备份文件
+//
 // v0.11 端点：
-//   POST   /api/admin/playground/chat     内置 Chat 测试台（流式/非流式，管理凭证直调）
+//
+//	POST   /api/admin/playground/chat     内置 Chat 测试台（流式/非流式，管理凭证直调）
+//
 // Phase 3 端点（Auto-Pilot）：
-//   GET    /api/admin/autopilot/state                 完整状态
-//   GET    /api/admin/autopilot/snapshot              决策快照
-//   PUT    /api/admin/autopilot/mode                  热切换模式
-//   PUT    /api/admin/autopilot/engine                热切换引擎
-//   GET    /api/admin/autopilot/pending               待审建议
-//   POST   /api/admin/autopilot/pending/:key/approve  批准
-//   POST   /api/admin/autopilot/pending/:key/reject   驳回
+//
+//	GET    /api/admin/autopilot/state                 完整状态
+//	GET    /api/admin/autopilot/snapshot              决策快照
+//	PUT    /api/admin/autopilot/mode                  热切换模式
+//	PUT    /api/admin/autopilot/engine                热切换引擎
+//	GET    /api/admin/autopilot/pending               待审建议
+//	POST   /api/admin/autopilot/pending/:key/approve  批准
+//	POST   /api/admin/autopilot/pending/:key/reject   驳回
 package admin
 
 import (
@@ -45,6 +52,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -56,6 +64,7 @@ import (
 	"github.com/nslmcrs/gateway/internal/config"
 	"github.com/nslmcrs/gateway/internal/data"
 	"github.com/nslmcrs/gateway/internal/hooks"
+	"github.com/nslmcrs/gateway/internal/kernelctl"
 	"github.com/nslmcrs/gateway/internal/modelcatalog"
 	"github.com/nslmcrs/gateway/internal/modelhealth"
 	"github.com/nslmcrs/gateway/internal/modelmeta"
@@ -67,17 +76,21 @@ import (
 // 不存在时表示仍处于初始默认令牌状态（首次登录后强制改密）。
 const settingKeyTokenHash = "admin:token_hash"
 
+// settingKeyStrategy 持久化活跃策略 id（v0.14），供重启后恢复 + 降级路径镜像。
+const settingKeyStrategy = "strategy.active"
+
 // Handler 管理 API 处理器。
 type Handler struct {
-	store    *data.Store
-	syncer   *modelmeta.Syncer
-	prober   *modelmeta.Prober     // 模型探活器（可选；main.go 装配后注入）
-	cfg      *config.Config
-	ap       *autopilot.Controller // Auto-Pilot 总控（可选；main.go 装配后注入）
-	sched    *scheduler.Scheduler  // 调度器（可选；用于运行时改熔断/并发配置）
-	bk       *backup.Service       // 数据库备份服务（v0.8；可选）
-	sweeper  *modelhealth.Sweeper  // 模型级健康扫描器（v0.9；可选）
-	webhook  *hooks.Webhook        // 事件回调服务（v0.10；可选）
+	store   *data.Store
+	syncer  *modelmeta.Syncer
+	prober  *modelmeta.Prober // 模型探活器（可选；main.go 装配后注入）
+	cfg     *config.Config
+	ap      *autopilot.Controller // Auto-Pilot 总控（可选；main.go 装配后注入）
+	sched   *scheduler.Scheduler   // 调度器（可选；用于运行时改熔断/并发配置）
+	bk      *backup.Service        // 数据库备份服务（v0.8；可选）
+	sweeper *modelhealth.Sweeper   // 模型级健康扫描器（v0.9；可选）
+	webhook *hooks.Webhook         // 事件回调服务（v0.10；可选）
+	kernel  *kernelctl.Client      // v0.14 Rust 控制面（可选；策略端点用）
 }
 
 // New 创建管理 API 处理器。
@@ -115,6 +128,12 @@ func (h *Handler) SetWebhook(w *hooks.Webhook) *Handler {
 	return h
 }
 
+// SetKernel 注入 Rust 控制面客户端（启用 /api/admin/strategy 系列，v0.14）。
+func (h *Handler) SetKernel(k *kernelctl.Client) *Handler {
+	h.kernel = k
+	return h
+}
+
 // tokenFromRequest 从请求中提取管理令牌（X-Admin-Token 或 Bearer）。
 func tokenFromRequest(c *gin.Context) string {
 	token := c.GetHeader("X-Admin-Token")
@@ -125,6 +144,15 @@ func tokenFromRequest(c *gin.Context) string {
 		}
 	}
 	return token
+}
+
+// audit 记录一条管理操作审计日志（v0.13 企业合规）。best-effort：写入失败仅告警不阻断。
+// actor 取自请求令牌掩码；action 为动作分类；detail 为附加上下文（可序列化为 JSON）。
+func (h *Handler) audit(c *gin.Context, action string, detail any) {
+	actor := data.MaskToken(tokenFromRequest(c))
+	if err := h.store.RecordAudit(c.Request.Context(), actor, action, c.ClientIP(), detail); err != nil {
+		slog.Warn("审计日志写入失败", "action", action, "err", err)
+	}
 }
 
 // verifyToken 校验令牌是否有效。
@@ -180,9 +208,9 @@ func (h *Handler) AuthMiddleware() gin.HandlerFunc {
 		// 强制改密锁定：默认令牌状态下拒绝所有管理操作
 		if isDefault {
 			c.JSON(http.StatusForbidden, gin.H{
-				"error":                 "首次登录必须先修改管理令牌",
-				"type":                  "must_change_password",
-				"must_change_password":  true,
+				"error":                "首次登录必须先修改管理令牌",
+				"type":                 "must_change_password",
+				"must_change_password": true,
 			})
 			c.Header("X-Admin-Must-Change", "1")
 			c.Abort()
@@ -241,7 +269,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		g.GET("/settings", h.getSettings)
 		g.PUT("/settings", h.putSettings)
 
+		// 策略引擎（v0.14）
+		g.GET("/strategy", h.getStrategy)
+		g.PUT("/strategy", h.putStrategy)
+
 		g.GET("/logs", h.getLogs)
+
+		// 管理操作审计日志（v0.13）
+		g.GET("/audit", h.listAudit)
 
 		// 数据库备份（v0.8）
 		g.GET("/backup", h.listBackups)
@@ -347,14 +382,29 @@ func (h *Handler) changePassword(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	h.audit(c, "password.change", nil)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// listAudit 返回管理操作审计日志（最近 N 条，倒序）。?limit=200
+func (h *Handler) listAudit(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
+	// v0.14 游标分页
+	beforeTS, _ := strconv.ParseInt(c.Query("before_ts"), 10, 64)
+	beforeID, _ := strconv.ParseInt(c.Query("before_id"), 10, 64)
+	entries, err := h.store.ListAudit(c.Request.Context(), beforeTS, beforeID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": entries})
 }
 
 // authStatus 返回鉴权状态（无需 token，供前端探测是否需强制改密）。
 func (h *Handler) authStatus(c *gin.Context) {
 	initialized := !h.mustChangePassword(c.Request.Context())
 	c.JSON(http.StatusOK, gin.H{
-		"initialized":         initialized,
+		"initialized":          initialized,
 		"must_change_password": !initialized,
 	})
 }
@@ -376,14 +426,14 @@ func (h *Handler) listKeys(c *gin.Context) {
 	}
 	// 返回脱敏值
 	type keyView struct {
-		ID          int64  `json:"id"`
-		KeyMask     string `json:"key_mask"`
-		Label       string `json:"label"`
-		Email       string `json:"email"`
-		RPMOverride int    `json:"rpm_override"`
-		Enabled     bool   `json:"enabled"`
-		Status      string `json:"status"`
-		ConsecutiveFail int `json:"consecutive_fail"`
+		ID              int64  `json:"id"`
+		KeyMask         string `json:"key_mask"`
+		Label           string `json:"label"`
+		Email           string `json:"email"`
+		RPMOverride     int    `json:"rpm_override"`
+		Enabled         bool   `json:"enabled"`
+		Status          string `json:"status"`
+		ConsecutiveFail int    `json:"consecutive_fail"`
 	}
 	views := make([]keyView, len(keys))
 	for i, k := range keys {
@@ -407,15 +457,16 @@ func (h *Handler) addKey(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	h.audit(c, "key.add", gin.H{"id": k.ID, "label": req.Label})
 	c.JSON(http.StatusCreated, gin.H{"id": k.ID, "key_mask": k.KeyMask})
 }
 
 // bulkAddKeysReq 批量导入请求体。
 // 既支持预拆分数组，也支持单个多行/逗号分隔字符串（便于粘贴）。
 type bulkAddKeysReq struct {
-	Keys        []string `json:"keys"`         // 精确数组
-	Raw         string   `json:"raw"`          // 多行 / 逗号分隔粘贴文本（与 keys 合并）
-	Label       string   `json:"label"`        // 批量统一标签
+	Keys        []string `json:"keys"`  // 精确数组
+	Raw         string   `json:"raw"`   // 多行 / 逗号分隔粘贴文本（与 keys 合并）
+	Label       string   `json:"label"` // 批量统一标签
 	Email       string   `json:"email"`
 	RPMOverride int      `json:"rpm_override"`
 }
@@ -446,6 +497,7 @@ func (h *Handler) bulkAddKeys(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	h.audit(c, "key.bulk_add", gin.H{"total": res.Total, "added": res.Added, "skipped": res.Skipped, "label": req.Label})
 	c.JSON(http.StatusOK, gin.H{
 		"total":   res.Total,
 		"added":   res.Added,
@@ -482,6 +534,7 @@ func (h *Handler) deleteKey(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	h.audit(c, "key.delete", gin.H{"id": id})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -501,6 +554,7 @@ func (h *Handler) updateKey(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		h.audit(c, "key.update", gin.H{"id": id, "enabled": *req.Enabled})
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -554,6 +608,7 @@ func (h *Handler) addCredential(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	h.audit(c, "credential.issue", gin.H{"id": cr.ID, "name": req.Name, "rpm_limit": req.RPMLimit})
 	c.JSON(http.StatusCreated, gin.H{"id": cr.ID, "credential": cred, "credential_mask": cr.CredentialMask})
 }
 
@@ -563,6 +618,7 @@ func (h *Handler) deleteCredential(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	h.audit(c, "credential.delete", gin.H{"id": id})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -607,19 +663,19 @@ func (h *Handler) getKeyHealth(c *gin.Context) {
 // modelView 模型广场富视图（契约对齐前端 Models.tsx）。
 // 旧版前端误读了 model_id/status/alternative 等不存在的字段，这里显式给出 JSON 标签。
 type modelView struct {
-	ID            string  `json:"id"`
-	Object        string  `json:"object"`
-	Created       int64   `json:"created"`
-	OwnedBy       string  `json:"owned_by"`
-	Root          string  `json:"root"`
-	Capability    string  `json:"capability"`
-	ParamCount    string  `json:"param_count"`
-	ContextLength int     `json:"context_length"`
-	Description   string  `json:"description"`
-	IsActive      bool    `json:"is_active"`
-	Status        string  `json:"status"`              // active|gone|disabled（前端据 gone 灰暗）
-	LastSeenActiveAt int64 `json:"last_seen_active_at"` // 最后活跃时刻
-	SyncedAt      int64   `json:"synced_at"`
+	ID               string `json:"id"`
+	Object           string `json:"object"`
+	Created          int64  `json:"created"`
+	OwnedBy          string `json:"owned_by"`
+	Root             string `json:"root"`
+	Capability       string `json:"capability"`
+	ParamCount       string `json:"param_count"`
+	ContextLength    int    `json:"context_length"`
+	Description      string `json:"description"`
+	IsActive         bool   `json:"is_active"`
+	Status           string `json:"status"`              // active|gone|disabled（前端据 gone 灰暗）
+	LastSeenActiveAt int64  `json:"last_seen_active_at"` // 最后活跃时刻
+	SyncedAt         int64  `json:"synced_at"`
 	// 用量统计（近 1h，被动流量聚合）
 	RequestCount int64   `json:"request_count"`
 	SuccessRate  float64 `json:"success_rate"` // 0..100
@@ -643,10 +699,10 @@ type modelView struct {
 	Architecture        string   `json:"architecture"`
 	SupportedInterfaces []string `json:"supported_interfaces"`
 	// v0.9：模型级熔断状态
-	CircuitState        string `json:"circuit_state"`         // closed|open|half_open|permanent
-	CircuitSuccessRate  int    `json:"circuit_success_rate"`  // 最近扫描成功率
-	CircuitPermanent    bool   `json:"circuit_permanent"`
-	CircuitOpenUntil    int64  `json:"circuit_open_until"`
+	CircuitState       string `json:"circuit_state"`        // closed|open|half_open|permanent
+	CircuitSuccessRate int    `json:"circuit_success_rate"` // 最近扫描成功率
+	CircuitPermanent   bool   `json:"circuit_permanent"`
+	CircuitOpenUntil   int64  `json:"circuit_open_until"`
 }
 
 // toModelViews 将 data.Model 列表拼装为带用量统计、探活结果、扩展规格与熔断状态的广场视图。
@@ -722,7 +778,8 @@ func (h *Handler) listModels(c *gin.Context) {
 }
 
 // listModelsPlaza 模型广场视图：支持 capability 过滤与仅可用过滤。
-//   GET /api/admin/models/plaza?capability=chat&active_only=true
+//
+//	GET /api/admin/models/plaza?capability=chat&active_only=true
 //
 // 默认 active_only=false：让 gone（已从上游消失）模型仍展示在广场（前端灰暗），
 // 而公开 /v1/models 仍只列 active。需求：消失模型不进客户端拉取列表，但保留在广场。
@@ -812,7 +869,9 @@ func (h *Handler) probeAllModels(c *gin.Context) {
 }
 
 // getModelDetail 单模型详情聚合（二级页）。
-//   GET /api/admin/models/detail?id=meta/llama-3.1-8b-instruct
+//
+//	GET /api/admin/models/detail?id=meta/llama-3.1-8b-instruct
+//
 // 返回模型静态信息 + 近 1h 用量/可用度 + 最近探活，供详情页概览 tab。
 func (h *Handler) getModelDetail(c *gin.Context) {
 	id := c.Query("id")
@@ -838,7 +897,8 @@ func (h *Handler) getModelDetail(c *gin.Context) {
 }
 
 // getModelTimeSeries 单模型时序（三级页 health tab）。
-//   GET /api/admin/models/timeseries?id=...&window=1h&bucket=60
+//
+//	GET /api/admin/models/timeseries?id=...&window=1h&bucket=60
 func (h *Handler) getModelTimeSeries(c *gin.Context) {
 	id := c.Query("id")
 	if id == "" {
@@ -859,7 +919,8 @@ func (h *Handler) getModelTimeSeries(c *gin.Context) {
 }
 
 // getModelProbes 单模型探活历史（三级页 probes tab）。
-//   GET /api/admin/models/probes?id=...&limit=100
+//
+//	GET /api/admin/models/probes?id=...&limit=100
 func (h *Handler) getModelProbes(c *gin.Context) {
 	id := c.Query("id")
 	if id == "" {
@@ -879,7 +940,8 @@ func (h *Handler) getModelProbes(c *gin.Context) {
 // --- 模型级熔断（v0.9）---
 
 // listModelCircuit 列出全部模型熔断状态。
-//   GET /api/admin/models/circuit?state=open   仅返回指定状态（可选）
+//
+//	GET /api/admin/models/circuit?state=open   仅返回指定状态（可选）
 func (h *Handler) listModelCircuit(c *gin.Context) {
 	state := strings.TrimSpace(c.Query("state"))
 	var list []data.ModelCircuit
@@ -897,7 +959,8 @@ func (h *Handler) listModelCircuit(c *gin.Context) {
 }
 
 // healthSweep 触发一次全量模型健康扫描。
-//   POST /api/admin/models/health-sweep
+//
+//	POST /api/admin/models/health-sweep
 func (h *Handler) healthSweep(c *gin.Context) {
 	if h.sweeper == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "健康扫描器未启用"})
@@ -911,7 +974,8 @@ func (h *Handler) healthSweep(c *gin.Context) {
 }
 
 // resetModelCircuit 手动复位模型熔断（解除永久/临时熔断）。
-//   POST /api/admin/models/circuit/reset   body: {"model":"meta/llama-..."}
+//
+//	POST /api/admin/models/circuit/reset   body: {"model":"meta/llama-..."}
 func (h *Handler) resetModelCircuit(c *gin.Context) {
 	var req struct {
 		Model string `json:"model"`
@@ -939,7 +1003,10 @@ func (h *Handler) getLogs(c *gin.Context) {
 	level := c.Query("level")
 	source := c.Query("source")
 	limit, _ := strconv.ParseInt(c.DefaultQuery("limit", "200"), 10, 64)
-	logs, err := h.store.QueryLogs(c.Request.Context(), traceID, level, source, 0, limit)
+	// v0.14 游标分页：before_ts/before_id 取更早的行（"加载更多"）
+	beforeTS, _ := strconv.ParseInt(c.Query("before_ts"), 10, 64)
+	beforeID, _ := strconv.ParseInt(c.Query("before_id"), 10, 64)
+	logs, err := h.store.QueryLogs(c.Request.Context(), traceID, level, source, beforeTS, beforeID, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

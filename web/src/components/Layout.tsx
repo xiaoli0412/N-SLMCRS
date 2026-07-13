@@ -4,7 +4,7 @@ import { useState, type ReactNode } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   LayoutDashboard, Boxes, Activity, KeyRound, Share2, Bot, ScrollText,
-  DatabaseBackup, Settings, ShieldAlert, LogOut, Menu, X, MessageSquare,
+  DatabaseBackup, Settings, ShieldAlert, LogOut, Menu, X, MessageSquare, Gauge,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Toaster, toast } from 'sonner'
@@ -20,6 +20,7 @@ const NAV = [
   { to: '/playground', icon: MessageSquare, key: 'playground' },
   { to: '/circuit', icon: ShieldAlert, key: 'circuit' },
   { to: '/operations', icon: Activity, key: 'operations' },
+  { to: '/strategy', icon: Gauge, key: 'strategy' },
   { to: '/keys', icon: KeyRound, key: 'keys' },
   { to: '/distribution', icon: Share2, key: 'distribution' },
   { to: '/autopilot', icon: Bot, key: 'autopilot' },
@@ -35,8 +36,20 @@ export function Layout({ children }: { children: ReactNode }) {
 
   if (!authed) return <LoginGate>{children}</LoginGate>
 
+  const logout = () => {
+    clearToken()
+    location.reload()
+  }
+
   return (
     <div className="flex h-screen overflow-hidden bg-background">
+      {/* 无障碍：跳到主内容，键盘用户免于遍历侧栏 */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-background focus:px-4 focus:py-2 focus:shadow-lg"
+      >
+        {t('a11y.skip', '跳到主内容')}
+      </a>
       <aside
         className={cn(
           'fixed inset-y-0 left-0 z-40 w-60 shrink-0 border-r bg-sidebar transition-transform md:static md:translate-x-0',
@@ -47,7 +60,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <Logo />
           <span className="font-semibold tracking-tight">N-SLMCRS</span>
         </div>
-        <nav className="flex flex-col gap-0.5 p-2">
+        <nav className="flex flex-col gap-0.5 p-2" aria-label={t('a11y.nav', '主导航')}>
           {NAV.map((n) => (
             <NavLink
               key={n.to}
@@ -76,17 +89,24 @@ export function Layout({ children }: { children: ReactNode }) {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <header className="flex h-14 items-center gap-2 border-b px-4">
-          <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setOpen((v) => !v)}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="md:hidden"
+            onClick={() => setOpen((v) => !v)}
+            aria-label={open ? t('a11y.closeMenu', '关闭菜单') : t('a11y.openMenu', '打开菜单')}
+            aria-expanded={open}
+          >
             {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </Button>
           <div className="flex-1" />
           <LangToggle />
           <ThemeToggle />
-          <Button variant="ghost" size="sm" onClick={() => { clearToken(); location.reload() }}>
+          <Button variant="ghost" size="icon" onClick={logout} aria-label={t('a11y.logout', '退出登录')}>
             <LogOut className="h-4 w-4" />
           </Button>
         </header>
-        <main className="flex-1 overflow-auto p-6">{children}</main>
+        <main id="main" className="flex-1 overflow-auto p-6">{children}</main>
       </div>
       <Toaster position="top-right" richColors />
     </div>
@@ -108,6 +128,7 @@ function LangToggle() {
   return (
     <button
       onClick={toggleLang}
+      aria-label={i18n.language === 'zh' ? 'Switch to English' : '切换为中文'}
       className="inline-flex h-9 items-center rounded-md border border-border px-2 text-xs font-medium text-muted-foreground hover:bg-muted"
     >
       {i18n.language === 'zh' ? 'EN' : '中'}

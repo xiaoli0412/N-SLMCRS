@@ -10,10 +10,12 @@
 
 use rusqlite::Connection;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::compute::Engine;
+use crate::strategy::{self, Strategy};
 
 // ─── 令牌桶（复刻 ratelimit.TokenBucket）──────────────────────────────
 
@@ -58,6 +60,28 @@ impl TokenBucket {
             return true;
         }
         false
+    }
+
+    /// 检查是否有 n 个令牌但**不消费**（准入筛选用）。
+    /// v0.13 (B2)：/reserve 先 peek 筛出有余量的候选，再仅对最终选中的 N 个消费，
+    /// 避免旧实现对全部候选 allow(1) 消费、却只取 N 个、白耗 (候选数−N) 个官方配额。
+    #[allow(dead_code)]
+    pub fn has_tokens(&mut self, n: i64) -> bool {
+        self.refill();
+        self.tokens >= n as f64
+    }
+
+    /// v0.14 策略：带 RPM 头寸的准入检查。headroom∈(0,1]：
+    ///   - headroom=1.0 → 地板 0 → tokens≥1（骑满容量，可消费到空）；
+    ///   - headroom=0.8 → 地板=capacity×20%，须消费后仍 ≥ 地板，即 tokens ≥ 地板+1。
+    ///
+    /// 内化策略头寸：切到 Guardian(0.8) 后即刻收紧准入，无需重建桶。
+    /// 用「地板+1」而非「> 地板」，给 refill 留 1 token 硬边界，避免边界被毫秒级
+    /// 回填越过导致准入抖动。
+    pub fn has_admission(&mut self, headroom: f64) -> bool {
+        self.refill();
+        let floor = self.capacity * (1.0 - headroom); // 保留地板
+        self.tokens >= floor + 1.0
     }
 
     /// 用上游 X-RateLimit-Remaining 校准（仅当上游更紧时收紧）。
@@ -150,6 +174,10 @@ pub struct AppState {
     pub key_brk: RwLock<HashMap<i64, KeyBreaker>>,
     /// /data/kernel.db 连接（仅写；读走内存镜像）。Connection 非 Sync，用 Mutex 包裹。
     pub store: Mutex<Connection>,
+    /// v0.14 活跃策略（/reserve 按其选择算法/扇出/头寸派发）。
+    pub active: RwLock<Strategy>,
+    /// RoundRobin 轮转指针（每轮 reserve 后推进，均匀分发）。
+    pub rr_counter: AtomicU64,
 }
 
 impl AppState {
@@ -161,7 +189,19 @@ impl AppState {
             windows: RwLock::new(HashMap::new()),
             key_brk: RwLock::new(HashMap::new()),
             store: Mutex::new(conn),
+            active: RwLock::new(*strategy::default_strategy()),
+            rr_counter: AtomicU64::new(0),
         }
+    }
+
+    /// 取活跃策略（Copy 出，无锁风险）。
+    pub fn active_strategy(&self) -> Strategy {
+        *self.active.read().unwrap()
+    }
+
+    /// 设活跃策略（PUT /strategy 调用）。
+    pub fn set_strategy(&self, s: Strategy) {
+        *self.active.write().unwrap() = s;
     }
 }
 

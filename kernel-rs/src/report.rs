@@ -245,6 +245,7 @@ mod tests {
                     key_id: 1,
                     rpm: 500,
                     weight_boost: 1.0,
+                    inflight: 0,
                 }],
             },
         );
@@ -258,13 +259,6 @@ mod tests {
                 rate_limit_remaining: Some(10),
             }]),
         );
-        let avail = {
-            let mut b = st.buckets.write().unwrap();
-            b.get_mut(&1).unwrap().allow(0); // 触发 refill 不消费
-                                             // 取当前余量：allow(0) 返回 true 不消费，无法读余量；改用反射——直接用 0 消费探测
-            0 // placeholder，下面用行为断言替代
-        };
-        let _ = avail;
         // 行为断言：余量收紧到 10，可再消费 10 次，第 11 次失败
         let mut ok_count = 0;
         for _ in 0..15 {

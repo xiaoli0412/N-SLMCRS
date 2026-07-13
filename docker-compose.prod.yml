@@ -2,15 +2,15 @@
 #
 # 与 docker-compose.yml 的区别：
 #   - 用 bind-mount /opt/n-slmcrs/data:/data（非命名卷），复用 systemd 装机时已创建的数据目录与权限
-#   - 镜像 tag 由 TAG 环境变量驱动（默认 v0.12.0），与主 compose 一致
+#   - 镜像 tag 由 TAG 环境变量驱动（默认 v0.14.0），与主 compose 一致
 #
 # 启动：
-#   TAG=v0.12.0 docker compose -f docker-compose.prod.yml up -d
-#   bash scripts/deploy.sh v0.12.0   # 自动探测并使用本文件（若存在）
+#   TAG=v0.14.0 docker compose -f docker-compose.prod.yml up -d
+#   bash scripts/deploy.sh v0.14.0   # 自动探测并使用本文件（若存在）
 
 services:
   gateway:
-    image: ghcr.io/xiaoli0412/n-slmcrs-gateway:${TAG:-v0.12.0}
+    image: ghcr.io/xiaoli0412/n-slmcrs-gateway:${TAG:-v0.14.0}
     container_name: nslmcrs-gateway
     restart: unless-stopped
     # 以 uid 998 运行，与 /opt/n-slmcrs/data 属主（主机 nslmcrs=998）对齐，
@@ -44,7 +44,7 @@ services:
         max-file: "3"
 
   kernel:
-    image: ghcr.io/xiaoli0412/n-slmcrs-kernel:${TAG:-v0.12.0}
+    image: ghcr.io/xiaoli0412/n-slmcrs-kernel:${TAG:-v0.14.0}
     container_name: nslmcrs-kernel
     restart: unless-stopped
     # 以 uid 998 运行，与 /opt/n-slmcrs 属主对齐，确保可写 /data/kernel.db

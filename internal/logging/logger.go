@@ -20,9 +20,15 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/nslmcrs/gateway/internal/data"
 )
+
+// pendingEntry 待批量落库的日志条目（v0.14：单写者 drain 收敛写争用）。
+type pendingEntry struct {
+	level, source, traceID, msg, ctxJSON string
+}
 
 // 配置键。
 type Config struct {
@@ -54,13 +60,16 @@ func traceIDFrom(ctx context.Context) string {
 
 // Logger 统一日志器。
 type Logger struct {
-	sl     *slog.Logger
-	store  *data.Store
-	mu     sync.Mutex
-	level  slog.Level
-	out    io.Writer  // stdout 或 stdout+file 多写
-	file   *os.File   // 可选文件 sink（nil=仅 stdout）
-	format string     // json | text（SetLevel 重建 handler 时保留）
+	sl        *slog.Logger
+	store     *data.Store
+	mu        sync.Mutex
+	level     slog.Level
+	out       io.Writer   // stdout 或 stdout+file 多写
+	file      *os.File    // 可选文件 sink（nil=仅 stdout）
+	format    string      // json | text（SetLevel 重建 handler 时保留）
+	ch        chan pendingEntry // v0.14 批量写缓冲（store!=nil 时启用）
+	drainDone chan struct{}      // drain goroutine 退出信号
+	drainWg   sync.WaitGroup
 }
 
 // New 创建日志器。store 为 nil 时仅输出 stdout（不落库）。
@@ -88,17 +97,81 @@ func New(store *data.Store, cfg Config) *Logger {
 	} else {
 		sh = slog.NewJSONHandler(out, handlerOpt)
 	}
-	return &Logger{sl: slog.New(sh), store: store, level: level, out: out, file: f, format: cfg.Format}
+	lg := &Logger{sl: slog.New(sh), store: store, level: level, out: out, file: f, format: cfg.Format}
+	// v0.14：store 非空时启动单写者 drain goroutine，批量落库降 SQLite 写争用。
+	if store != nil {
+		lg.ch = make(chan pendingEntry, 1024)
+		lg.drainDone = make(chan struct{})
+		lg.drainWg.Add(1)
+		go lg.drain()
+	}
+	return lg
 }
 
-// Close 关闭日志文件句柄（优雅关闭时调用；无文件则无操作）。
+// Close 关闭日志文件句柄 + 排空 drain 队列（优雅关闭时调用）。
 func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.drainDone != nil {
+		close(l.drainDone)
+		l.drainWg.Wait()
+	}
 	if l.file != nil {
 		return l.file.Close()
 	}
 	return nil
+}
+
+// drain 单写者后台 goroutine：批量收积日志，按 batch 大小或定时 flush 落库。
+// 收敛了旧实现"每行一 goroutine 各自 INSERT"导致的 SQLite 写争用与 goroutine 开销。
+func (l *Logger) drain() {
+	defer l.drainWg.Done()
+	const batchSize = 100
+	const flushInterval = 500 * time.Millisecond
+	batch := make([]data.LogInsert, 0, batchSize)
+	timer := time.NewTimer(flushInterval)
+	defer timer.Stop()
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		_ = l.store.WriteLogBatch(context.Background(), batch)
+		batch = batch[:0]
+	}
+	add := func(e pendingEntry) {
+		batch = append(batch, data.LogInsert{
+			Level: e.level, Source: e.source, TraceID: e.traceID,
+			Message: e.msg, Context: e.ctxJSON,
+		})
+		if len(batch) >= batchSize {
+			flush()
+			timer.Reset(flushInterval)
+		}
+	}
+	for {
+		select {
+		case e, ok := <-l.ch:
+			if !ok {
+				flush()
+				return
+			}
+			add(e)
+		case <-timer.C:
+			flush()
+			timer.Reset(flushInterval)
+		case <-l.drainDone:
+			// 退出前排空剩余缓冲
+			for {
+				select {
+				case e := <-l.ch:
+					add(e)
+				default:
+					flush()
+					return
+				}
+			}
+		}
+	}
 }
 
 // fileDir 取路径的目录部分（跨平台：兼容 / 与 \）。
@@ -155,12 +228,17 @@ func (l *Logger) log(ctx context.Context, level slog.Level, source, msg string, 
 	case slog.LevelError:
 		l.sl.ErrorContext(ctx, msg, args...)
 	}
-	// app_logs 落库（异步不阻塞请求；失败静默，避免日志拖垮主流程）
-	if l.store != nil {
-		ctxJSON := attrsToJSON(attrs)
-		go func(s *data.Store, lvl, src, tid, m, cj string) {
-			_ = s.WriteLog(context.Background(), lvl, src, tid, m, cj)
-		}(l.store, level.String(), source, traceID, msg, ctxJSON)
+	// app_logs 落库（v0.14：非阻塞送入 drain 批量队列；缓冲满则丢弃，绝不阻塞热路径）
+	if l.ch != nil {
+		entry := pendingEntry{
+			level: level.String(), source: source, traceID: traceID,
+			msg: msg, ctxJSON: attrsToJSON(attrs),
+		}
+		select {
+		case l.ch <- entry:
+		default:
+			// 缓冲满：丢弃，避免日志反压拖垮请求
+		}
 	}
 }
 

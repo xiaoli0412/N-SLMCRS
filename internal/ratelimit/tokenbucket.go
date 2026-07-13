@@ -14,10 +14,10 @@ import (
 type TokenBucket struct {
 	mu sync.Mutex
 
-	capacity   float64       // 桶容量（= RPM 上限）
-	tokens     float64       // 当前令牌数
-	refillRate float64       // 每秒回填速率（RPM/60）
-	lastRefill time.Time     // 上次回填时间
+	capacity   float64   // 桶容量（= RPM 上限）
+	tokens     float64   // 当前令牌数
+	refillRate float64   // 每秒回填速率（RPM/60）
+	lastRefill time.Time // 上次回填时间
 }
 
 // NewTokenBucket 创建令牌桶。rpm 为每分钟请求数上限。
@@ -44,6 +44,30 @@ func (b *TokenBucket) Allow(n int) bool {
 
 // AllowOne 消费 1 个令牌的快捷方法。
 func (b *TokenBucket) AllowOne() bool { return b.Allow(1) }
+
+// Peek 检查是否有 n 个令牌但**不消费**（准入筛选用）。
+// v0.13 (B2)：selectKeys 先 peek 筛出有余量的候选，再仅对最终选中的 N 个消费，
+// 避免旧实现对全部候选 Allow(1) 消费、却只发 N 路、白耗 (候选数−N) 个官方配额。
+func (b *TokenBucket) Peek(n int) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refill()
+	return b.tokens >= float64(n)
+}
+
+// HasAdmission 带 RPM 头寸的准入检查（v0.14 策略）。与 Rust has_admission 对齐：
+// headroom∈(0,1]，地板=capacity×(1−headroom)，须消费后仍 ≥ 地板，即 tokens≥地板+1。
+// headroom=1.0→地板 0→tokens≥1（骑满）；0.8→留 20% 抗突发防 429 烧键。
+func (b *TokenBucket) HasAdmission(headroom float64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refill()
+	if headroom >= 1.0 {
+		return b.tokens >= 1.0
+	}
+	floor := b.capacity * (1.0 - headroom)
+	return b.tokens >= floor+1.0
+}
 
 // Available 返回当前可用令牌数（触发回填后）。
 func (b *TokenBucket) Available() float64 {
@@ -80,8 +104,8 @@ func (b *TokenBucket) refill() {
 
 // Manager 管理所有 Key 的令牌桶。
 type Manager struct {
-	mu       sync.RWMutex
-	buckets  map[int64]*TokenBucket // keyID → bucket
+	mu         sync.RWMutex
+	buckets    map[int64]*TokenBucket // keyID → bucket
 	defaultRPM int
 }
 
@@ -132,6 +156,16 @@ func (m *Manager) bucket(keyID int64) *TokenBucket {
 // Allow 检查 keyID 是否允许消费 n 个令牌。
 func (m *Manager) Allow(keyID int64, n int) bool {
 	return m.bucket(keyID).Allow(n)
+}
+
+// HasTokens 检查 keyID 是否有 n 个令牌（不消费，准入筛选用）。
+func (m *Manager) HasTokens(keyID int64, n int) bool {
+	return m.bucket(keyID).Peek(n)
+}
+
+// HasAdmission 检查 keyID 是否满足策略头寸准入（v0.14，不消费）。与 Rust 对齐。
+func (m *Manager) HasAdmission(keyID int64, headroom float64) bool {
+	return m.bucket(keyID).HasAdmission(headroom)
 }
 
 // AllowKeys 从候选 keyIDs 中选出当前有余量的（用于调度层选 N 路并发）。

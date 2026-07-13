@@ -6,15 +6,19 @@
 //!   权威状态（内存 + 持久化），新增 /reserve（准入批量选 Key）、/report（反馈
 //!   批量更新状态）。Go 主干经 HTTP/JSON 调用；不可达时降级回内置 Go 实现
 //!   （KERNEL_FAIL_CLOSED=0）；翻 1 后硬 fail-closed（/reserve 失败即拒绝准入）。
+//! v0.14：策略引擎——/reserve 按活跃策略的选择算法（加权随机/轮转/最少在途/严格
+//!   优先）派发，扇出与 RPM 头寸由策略决定；新增 GET/PUT /strategy 端点。
 //!
 //! 模块：compute（纯函数）/ state（权威状态）/ store（持久化）/
-//!       reserve、report（控制面端点）/ testsupport（测试支持）。
+//!       reserve、report（控制面端点）/ strategy（命名策略预设）/
+//!       testsupport（测试支持）。
 
 mod compute;
 mod report;
 mod reserve;
 mod state;
 mod store;
+mod strategy;
 #[cfg(test)]
 mod testsupport;
 
@@ -24,6 +28,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -35,6 +40,7 @@ use compute::{
 };
 use state::{AppState, SharedState};
 use store as kv;
+use strategy::{by_id, recommend, Strategy};
 
 // ─── handlers ─────────────────────────────────────────────────────────
 
@@ -84,6 +90,64 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
+// ─── v0.14 策略端点 ───────────────────────────────────────────────────
+
+/// GET /strategy 响应：活跃策略 + 全部预设 + 按密钥数推荐。
+#[derive(Serialize)]
+struct StrategyResp {
+    active: Strategy,
+    presets: &'static [Strategy],
+    recommended: &'static str,
+}
+
+async fn get_strategy(State(st): State<SharedState>) -> Json<StrategyResp> {
+    // 推荐基于当前已注册的熔断器数（≈ 可用密钥数）
+    let key_count = st.key_brk.read().unwrap().len();
+    Json(StrategyResp {
+        active: st.active_strategy(),
+        presets: strategy::PRESETS,
+        recommended: recommend(key_count),
+    })
+}
+
+/// PUT /strategy 请求体。
+#[derive(Deserialize)]
+struct SetStrategyReq {
+    id: String,
+}
+
+/// PUT /strategy：设活跃策略并持久化（meta）。未知 id → 400。
+async fn put_strategy(
+    State(st): State<SharedState>,
+    Json(req): Json<SetStrategyReq>,
+) -> Result<Json<StrategyResp>, StatusCode> {
+    let Some(s) = by_id(&req.id) else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    st.set_strategy(*s);
+    // 持久化到 meta（重启载入）
+    if let Ok(conn) = st.store.lock() {
+        let _ = kv::set_meta(&conn, "active_strategy", s.id);
+        let _ = kv::append_sub_decision(
+            &conn,
+            "",
+            crate::compute::now_unix(),
+            "strategy",
+            "set_active",
+            0,
+            "",
+            st.active_strategy().id,
+            s.id,
+        );
+    }
+    let key_count = st.key_brk.read().unwrap().len();
+    Ok(Json(StrategyResp {
+        active: *s,
+        presets: strategy::PRESETS,
+        recommended: recommend(key_count),
+    }))
+}
+
 #[tokio::main]
 async fn main() {
     let port: u16 = env::var("KERNEL_PORT")
@@ -114,12 +178,29 @@ async fn main() {
         );
     }
 
+    // v0.14：载入持久化活跃策略（meta），未设或失效则默认 balanced。
+    let active = match kv::get_meta(&conn, "active_strategy") {
+        Ok(Some(id)) => match by_id(&id) {
+            Some(s) => {
+                eprintln!("[nslmcrs-kernel] active strategy = {id} (restored)");
+                *s
+            }
+            None => {
+                eprintln!("[nslmcrs-kernel] unknown strategy id '{id}', falling back to balanced");
+                *strategy::default_strategy()
+            }
+        },
+        _ => *strategy::default_strategy(),
+    };
+
     let app_state = AppState {
         engine: Engine::new(),
         buckets: std::sync::RwLock::new(std::collections::HashMap::new()),
         windows: std::sync::RwLock::new(std::collections::HashMap::new()),
         key_brk: std::sync::RwLock::new(key_brk),
         store: std::sync::Mutex::new(conn),
+        active: std::sync::RwLock::new(active),
+        rr_counter: std::sync::atomic::AtomicU64::new(0),
     };
     let st: SharedState = Arc::new(app_state);
 
@@ -133,6 +214,8 @@ async fn main() {
         // v0.12 控制面端点
         .route("/reserve", post(reserve::reserve_handler))
         .route("/report", post(report::report_handler))
+        // v0.14 策略端点
+        .route("/strategy", get(get_strategy).put(put_strategy))
         .with_state(st);
 
     let listener = tokio::net::TcpListener::bind(addr)

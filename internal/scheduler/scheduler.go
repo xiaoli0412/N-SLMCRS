@@ -15,12 +15,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"log/slog"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nslmcrs/gateway/internal/data"
@@ -42,15 +44,20 @@ type RuntimeOverrides interface {
 
 // Scheduler 请求调度器。
 type Scheduler struct {
-	store     *data.Store
-	client    *upstream.Client
-	rl        *ratelimit.Manager
-	health    *ratelimit.HealthTracker
-	config    SchedulerConfig
-	mu        sync.RWMutex      // 保护 config 的运行时可变字段
-	runtime   RuntimeOverrides  // 可选：Auto-Pilot 注入（nil=用默认）
-	webhook   WebhookEmitter    // 可选：v0.10 事件回调（nil=不发射）
-	kernel    *kernelctl.Client // 可选：v0.12 Rust 控制面（nil=纯 Go 降级）
+	store   *data.Store
+	client  *upstream.Client
+	rl      *ratelimit.Manager
+	health  *ratelimit.HealthTracker
+	config  SchedulerConfig
+	mu      sync.RWMutex      // 保护 config 与 strategy 的运行时可变字段
+	runtime RuntimeOverrides  // 可选：Auto-Pilot 注入（nil=用默认）
+	webhook WebhookEmitter    // 可选：v0.10 事件回调（nil=不发射）
+	kernel  *kernelctl.Client // 可选：v0.12 Rust 控制面（nil=纯 Go 降级）
+	metrics MetricsCollector  // 可选：v0.13 Prometheus 指标（nil=不采集）
+	// v0.14：策略镜像（降级路径用；kernel 在线时 kernel 为权威）。受 mu 保护。
+	strategy    kernelctl.StrategyPreset
+	rrCounter   atomic.Uint64        // RoundRobin 轮转指针（降级路径）
+	keyInflight sync.Map             // key_id → *atomic.Int64 在途计数（LeastInflight + 候选 Inflight 传递）
 }
 
 // SetKernel 注入 Rust 内核客户端（nil=清除，走纯 Go 降级）。
@@ -59,11 +66,52 @@ func (s *Scheduler) SetKernel(k *kernelctl.Client) {
 	s.kernel = k
 }
 
+// SetStrategy 镜像活跃策略到调度器（降级路径 selectKeysGo 据此选择算法/扇出/头寸）。
+// kernel 在线时 kernel 为权威；此处镜像仅用于 kernel 不可达的降级场景。
+func (s *Scheduler) SetStrategy(p kernelctl.StrategyPreset) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.strategy = p
+}
+
+// strategySnapshot 返回当前策略快照（线程安全）。
+func (s *Scheduler) strategySnapshot() kernelctl.StrategyPreset {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.strategy
+}
+
+// incInflight / decInflight / getInflight 逐 Key 在途计数（LeastInflight 策略排序用）。
+func (s *Scheduler) incInflight(keyID int64)  { s.inflightDelta(keyID, 1) }
+func (s *Scheduler) decInflight(keyID int64)  { s.inflightDelta(keyID, -1) }
+func (s *Scheduler) inflightDelta(keyID int64, delta int64) {
+	v, _ := s.keyInflight.LoadOrStore(keyID, new(atomic.Int64))
+	v.(*atomic.Int64).Add(delta)
+}
+func (s *Scheduler) getInflight(keyID int64) int64 {
+	v, ok := s.keyInflight.Load(keyID)
+	if !ok {
+		return 0
+	}
+	return v.(*atomic.Int64).Load()
+}
+
 // WebhookEmitter 事件回调抽象（避免 scheduler 直接依赖 hooks 包）。
 // 与 hooks.Webhook.EmitFields 签名对齐，使 *hooks.Webhook 直接满足本接口。
 type WebhookEmitter interface {
 	EmitFields(ctx context.Context, typ, traceID, model, keyMask, reason string, status, latency int)
 }
+
+// MetricsCollector 可选的 Prometheus 指标采集（v0.13）。
+// 与 *metrics.Collector 对齐，使 scheduler 不直接依赖 metrics 包。
+type MetricsCollector interface {
+	RecordRequest(status, model string, latencySec float64)
+	IncInflight(model string)
+	DecInflight(model string)
+}
+
+// SetMetrics 注入 Prometheus 采集器（nil=清除，不采集）。
+func (s *Scheduler) SetMetrics(m MetricsCollector) { s.metrics = m }
 
 // SetRuntime 注入 Auto-Pilot 运行时覆盖（nil=清除，恢复默认）。
 func (s *Scheduler) SetRuntime(rt RuntimeOverrides) {
@@ -173,24 +221,31 @@ func New(store *data.Store, client *upstream.Client, rl *ratelimit.Manager, heal
 	if cfg.HealthWindow == 0 {
 		cfg.HealthWindow = 2 * time.Minute
 	}
-	return &Scheduler{store: store, client: client, rl: rl, health: health, config: cfg}
+	return &Scheduler{
+		store: store, client: client, rl: rl, health: health, config: cfg,
+		// v0.14：降级路径默认 balanced（kernel 在线时由 SetStrategy 覆盖为真实活跃策略）
+		strategy: kernelctl.StrategyPreset{
+			ID: "balanced", Selection: "weighted_random", Fanout: 0,
+			BreakerThreshold: 5, BreakerCooldownSec: 30, RPMHeadroom: 1.0,
+		},
+	}
 }
 
 // ScheduleResult 调度结果。
 type ScheduleResult struct {
-	StatusCode    int
-	Body          []byte
-	Header        http.Header
-	TraceID       string
-	LatencyMS     int
-	UpstreamKey   string // 命中的 Key（脱敏）
-	PromptTokens  int
+	StatusCode       int
+	Body             []byte
+	Header           http.Header
+	TraceID          string
+	LatencyMS        int
+	UpstreamKey      string // 命中的 Key（脱敏）
+	PromptTokens     int
 	CompletionTokens int
-	TotalTokens   int
-	IsStream      bool
+	TotalTokens      int
+	IsStream         bool
 	// 流式模式下，由调用方负责读取
-	StreamResp    *http.Response
-	StreamCancel  context.CancelFunc
+	StreamResp   *http.Response
+	StreamCancel context.CancelFunc
 }
 
 // Dispatch 调度一次请求（非流式，默认 Chat 能力）。
@@ -203,6 +258,10 @@ func (s *Scheduler) DispatchCap(ctx context.Context, cap upstream.Capability, tr
 	start := time.Now()
 	inflight.Inc() // 在途计数 +1，供 Auto-Pilot 档位感知
 	defer inflight.Dec()
+	if s.metrics != nil {
+		s.metrics.IncInflight(model)
+		defer s.metrics.DecInflight(model)
+	}
 	keys, err := s.selectKeys(ctx, model)
 	if err != nil {
 		return nil, err
@@ -214,7 +273,25 @@ func (s *Scheduler) DispatchCap(ctx context.Context, cap upstream.Capability, tr
 	// 按能力选择上游路径（rerank 路径含模型，需动态拼接）
 	path := capPath(cap, model)
 
+	// degrade=true（kernel 不可达）时 Go 路径即权威：令牌由本处消费；
+	// degrade=false 时 Rust /reserve 已为返回的 N 个 Key 消费令牌，Go 不再重复扣减。
+	degrade := s.kernel == nil
+
 	n := min(len(keys), s.effectiveConcurrency())
+	// v0.14：降级路径按策略扇出封顶（Guardian/Fairshare 固定 1）。kernel 路径不封顶
+	// （kernel 已按其策略扇出返回 reserved，此处再封会丢弃已消费令牌的 Key）。
+	if degrade {
+		if strat := s.strategySnapshot(); strat.Fanout > 0 && strat.Fanout < n {
+			n = strat.Fanout
+		}
+	}
+	// v0.13 (B2)：仅对将真实发起的 N 个 Key 消费令牌。
+	// 旧 selectKeysGo 对全部候选 Allow(1) 消费、却只发 N 路，每请求白耗 (候选数−N) 个官方配额。
+	if degrade {
+		for i := 0; i < n; i++ {
+			s.rl.Allow(keys[i].ID, 1)
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, s.requestTimeout())
 	defer cancel()
 
@@ -237,6 +314,8 @@ func (s *Scheduler) DispatchCap(ctx context.Context, cap upstream.Capability, tr
 		wg.Add(1)
 		go func(idx int, key *data.UpstreamKey) {
 			defer wg.Done()
+			defer s.decInflight(key.ID) // v0.14：在途计数 -1（LeastInflight 排序用）
+			s.incInflight(key.ID)      // v0.14：在途计数 +1
 			resp, err := callUpstream(ctx, key)
 			ch <- attempt{result: resp, err: err, keyID: key.ID, index: idx}
 		}(i, keys[i])
@@ -248,7 +327,6 @@ func (s *Scheduler) DispatchCap(ctx context.Context, cap upstream.Capability, tr
 	recvCount := 0
 	// v0.12：kernel 在线时收集结果，循环后一次性 /report 批量反馈
 	reportItems := make([]kernelctl.ReportItem, 0, n)
-	degrade := s.kernel == nil // kernel 不可达时 Go 路径即权威（含降级回退场景）
 
 	for recvCount < n {
 		a := <-ch
@@ -320,19 +398,25 @@ func (s *Scheduler) DispatchCap(ctx context.Context, cap upstream.Capability, tr
 		latency := int(time.Since(start).Milliseconds())
 		resp := firstSuccess.result
 		tokens := extractTokens(resp.Body)
+		if s.metrics != nil {
+			s.metrics.RecordRequest("success", model, float64(latency)/1000)
+		}
 		return &ScheduleResult{
-			StatusCode:    resp.StatusCode,
-			Body:          resp.Body,
-			Header:        resp.Header,
-			TraceID:       traceID,
-			LatencyMS:     latency,
-			UpstreamKey:   keys[firstSuccess.index].KeyMask,
-			PromptTokens:  tokens.Prompt,
+			StatusCode:       resp.StatusCode,
+			Body:             resp.Body,
+			Header:           resp.Header,
+			TraceID:          traceID,
+			LatencyMS:        latency,
+			UpstreamKey:      keys[firstSuccess.index].KeyMask,
+			PromptTokens:     tokens.Prompt,
 			CompletionTokens: tokens.Completion,
-			TotalTokens:   tokens.Total,
+			TotalTokens:      tokens.Total,
 		}, nil
 	}
 
+	if s.metrics != nil {
+		s.metrics.RecordRequest("error", model, time.Since(start).Seconds())
+	}
 	return nil, fmt.Errorf("所有上游密钥均失败: %v", allErrors)
 }
 
@@ -361,22 +445,50 @@ func capPath(cap upstream.Capability, model string) string {
 func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, requestBody []byte) (*ScheduleResult, error) {
 	start := time.Now()
 	inflight.Inc() // 流式在途计数 +1；调用方读完 StreamCancel 时 -1
+	if s.metrics != nil {
+		s.metrics.IncInflight(model)
+	}
+	// metrics 在途与 inflight 同步扣减：正常返回由 streamCancel 兜底，
+	// 提前出错（无连接命中）在此处直接扣减。
 	keys, err := s.selectKeys(ctx, model)
 	if err != nil {
 		inflight.Dec()
+		if s.metrics != nil {
+			s.metrics.DecInflight(model)
+		}
 		return nil, err
 	}
 	if len(keys) == 0 {
 		inflight.Dec()
+		if s.metrics != nil {
+			s.metrics.DecInflight(model)
+		}
 		return nil, fmt.Errorf("无可用上游密钥")
 	}
 
+	degrade := s.kernel == nil // kernel 在线时令牌已由 /reserve 消费；degrade 时由 Go 消费
+
 	n := min(len(keys), s.effectiveConcurrency())
+	// v0.14：降级路径按策略扇出封顶（同 DispatchCap）。kernel 路径不封顶。
+	if degrade {
+		if strat := s.strategySnapshot(); strat.Fanout > 0 && strat.Fanout < n {
+			n = strat.Fanout
+		}
+	}
+	// v0.13 (B2)：仅对将真实发起的 N 个 Key 消费令牌（同 DispatchCap）。
+	if degrade {
+		for i := 0; i < n; i++ {
+			s.rl.Allow(keys[i].ID, 1)
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, s.requestTimeout())
-	// 包裹 cancel：调用方关闭流时一并扣减在途计数。
+	// 包裹 cancel：调用方关闭流时一并扣减在途计数（inflight + metrics）。
 	streamCancel := func() {
 		cancel()
 		inflight.Dec()
+		if s.metrics != nil {
+			s.metrics.DecInflight(model)
+		}
 	}
 
 	type streamAttempt struct {
@@ -393,6 +505,8 @@ func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, r
 		wg.Add(1)
 		go func(idx int, key *data.UpstreamKey) {
 			defer wg.Done()
+			defer s.decInflight(key.ID) // v0.14：在途计数 -1
+			s.incInflight(key.ID)      // v0.14：在途计数 +1
 			resp, err := s.client.ChatCompletionStream(ctx, key.KeyValue, requestBody)
 			ch <- streamAttempt{resp: resp, err: err, keyID: key.ID, index: idx}
 		}(i, keys[i])
@@ -404,7 +518,6 @@ func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, r
 	var allErrors []error
 	recvCount := 0
 	reportItems := make([]kernelctl.ReportItem, 0, n)
-	degrade := s.kernel == nil
 
 	for recvCount < n {
 		a := <-ch
@@ -452,6 +565,9 @@ func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, r
 			reportItems = append(reportItems, reportItem(key.ID, true, "success", -1))
 			s.reportResults(ctx, traceID, reportItems)
 		}
+		if s.metrics != nil {
+			s.metrics.RecordRequest("success", model, float64(latency)/1000)
+		}
 		return &ScheduleResult{
 			StatusCode:   200,
 			TraceID:      traceID,
@@ -460,10 +576,13 @@ func (s *Scheduler) DispatchStream(ctx context.Context, traceID, model string, r
 			IsStream:     true,
 			StreamResp:   firstConnected.resp,
 			StreamCancel: streamCancel, // 调用方读完关闭（内含在途 -1）
-			}, nil
-		}
+		}, nil
+	}
 
 	streamCancel()
+	if s.metrics != nil {
+		s.metrics.RecordRequest("error", model, time.Since(start).Seconds())
+	}
 	if !degrade {
 		s.reportResults(ctx, traceID, reportItems)
 	}
@@ -516,9 +635,10 @@ func (s *Scheduler) selectKeysKernel(ctx context.Context, model string, allKeys 
 		if s.runtime != nil {
 			boost = s.runtime.WeightBoost(k.ID)
 		}
-		cands = append(cands, kernelctl.Candidate{
-			KeyID: k.ID, RPM: s.rl.KeyRPM(k.ID, k.RPMOverride), WeightBoost: boost,
-		})
+			cands = append(cands, kernelctl.Candidate{
+				KeyID: k.ID, RPM: s.rl.KeyRPM(k.ID, k.RPMOverride), WeightBoost: boost,
+				Inflight: s.getInflight(k.ID), // v0.14：LeastInflight 策略排序用
+			})
 	}
 
 	threshold, cooldown := s.circuitConfig()
@@ -543,7 +663,9 @@ func (s *Scheduler) selectKeysKernel(ctx context.Context, model string, allKeys 
 	// echo 半开提升等熔断器变更回写 upstream_keys（Rust 已持久化到 kernel.db，
 	// 此处同步 Go 侧 SQLite 供 admin UI / ListCircuitHiddenModels 读）
 	for _, ch := range resp.KeyBreakerChanges {
-		_ = s.store.UpdateUpstreamKeyStatus(ctx, ch.KeyID, ch.Status, ch.ConsecutiveFail, ch.CoolingUntil)
+		if err := s.store.UpdateUpstreamKeyStatus(ctx, ch.KeyID, ch.Status, ch.ConsecutiveFail, ch.CoolingUntil); err != nil {
+			slog.Warn("echo 熔断器变更回写 upstream_keys 失败", "key_id", ch.KeyID, "status", ch.Status, "err", err)
+		}
 		if k, exists := byID[ch.KeyID]; exists {
 			k.Status = ch.Status
 			k.ConsecutiveFail = ch.ConsecutiveFail
@@ -565,8 +687,10 @@ func (s *Scheduler) selectKeysKernel(ctx context.Context, model string, allKeys 
 }
 
 // selectKeysGo Go 侧准入路径（kernel 不可达降级时为权威；v0.11 既有实现）。
+// v0.14：按策略镜像的选择算法/头寸派发（与 Rust select_by_algo 对齐）。
 func (s *Scheduler) selectKeysGo(ctx context.Context, allKeys []data.UpstreamKey) ([]*data.UpstreamKey, error) {
 	now := time.Now().Unix()
+	strat := s.strategySnapshot()
 	var candidates []*data.UpstreamKey
 	halfOpenAllowed := 1 // 每轮只放行 1 个半开试探
 	for i := range allKeys {
@@ -582,7 +706,9 @@ func (s *Scheduler) selectKeysGo(ctx context.Context, allKeys []data.UpstreamKey
 			k.Status = "half_open"
 			k.ConsecutiveFail = 0
 			k.CoolingUntil = 0
-			_ = s.store.UpdateUpstreamKeyStatus(ctx, k.ID, "half_open", 0, 0)
+			if err := s.store.UpdateUpstreamKeyStatus(ctx, k.ID, "half_open", 0, 0); err != nil {
+				slog.Warn("半开提升回写 upstream_keys 失败", "key_id", k.ID, "err", err)
+			}
 			s.health.ResetConsecutive(k.ID) // 清旧失败数，给试探干净起点
 		}
 		if k.Status == "half_open" {
@@ -591,8 +717,8 @@ func (s *Scheduler) selectKeysGo(ctx context.Context, allKeys []data.UpstreamKey
 			}
 			halfOpenAllowed--
 		}
-		// 限流余量检查
-		if !s.rl.Allow(k.ID, 1) {
+		// v0.14：按策略头寸准入（headroom<1 时保留地板防 429 烧键）
+		if !s.rl.HasAdmission(k.ID, strat.RPMHeadroom) {
 			continue
 		}
 		candidates = append(candidates, k)
@@ -602,19 +728,75 @@ func (s *Scheduler) selectKeysGo(ctx context.Context, allKeys []data.UpstreamKey
 		return nil, nil
 	}
 
-	// 按健康分加权随机排序
-	s.weightedShuffle(candidates)
+	// v0.14：按策略选择算法排序（加权随机/轮转/最少在途/严格优先）
+	s.selectByStrategy(candidates)
 	return candidates, nil
+}
+
+// keyScore 调度加权评分（与 Rust weighted_score 对齐）：
+// score = success_rate × 0.5^连续失败 × weight_boost，下限 1。
+func (s *Scheduler) keyScore(k *data.UpstreamKey) float64 {
+	rate := s.health.SuccessRate(k.ID, s.config.HealthWindow)
+	consec := s.health.ConsecutiveFailures(k.ID)
+	score := rate * math.Pow(0.5, float64(consec))
+	if s.runtime != nil {
+		score *= s.runtime.WeightBoost(k.ID)
+	}
+	if score < 1 {
+		score = 1
+	}
+	return score
+}
+
+// selectByStrategy 按活跃策略的选择算法排序候选（v0.14 降级路径，与 Rust 对齐）。
+func (s *Scheduler) selectByStrategy(keys []*data.UpstreamKey) {
+	strat := s.strategySnapshot()
+	switch strat.Selection {
+	case "round_robin":
+		s.roundRobinSelect(keys)
+	case "least_inflight":
+		sort.SliceStable(keys, func(i, j int) bool {
+			ai, aj := s.getInflight(keys[i].ID), s.getInflight(keys[j].ID)
+			if ai != aj {
+				return ai < aj
+			}
+			return s.keyScore(keys[i]) > s.keyScore(keys[j])
+		})
+	case "strict_priority":
+		sort.SliceStable(keys, func(i, j int) bool {
+			return s.keyScore(keys[i]) > s.keyScore(keys[j])
+		})
+	default: // weighted_random
+		s.weightedShuffle(keys)
+	}
+}
+
+// roundRobinSelect 按 key_id 稳定序 + rrCounter 轮转起点（均匀分发，最大化聚合 RPM）。
+func (s *Scheduler) roundRobinSelect(keys []*data.UpstreamKey) {
+	sort.SliceStable(keys, func(i, j int) bool { return keys[i].ID < keys[j].ID })
+	n := len(keys)
+	if n == 0 {
+		return
+	}
+	cur := s.rrCounter.Load()
+	rot := int(cur % uint64(n))
+	if rot > 0 {
+		rotated := make([]*data.UpstreamKey, n)
+		for i := 0; i < n; i++ {
+			rotated[i] = keys[(i+rot)%n]
+		}
+		copy(keys, rotated)
+	}
+	s.rrCounter.Add(1) // 每轮推进 1（Fairshare fanout=1 为完美轮转）
 }
 
 // weightedShuffle 按健康分加权随机排列。健康分越高，越靠前。
 func (s *Scheduler) weightedShuffle(keys []*data.UpstreamKey) {
 	type scored struct {
-		key  *data.UpstreamKey
+		key   *data.UpstreamKey
 		score float64
 	}
 	items := make([]scored, len(keys))
-	totalWeight := 0.0
 	for i, k := range keys {
 		// 基础分 = 成功率，连续失败惩罚
 		rate := s.health.SuccessRate(k.ID, s.config.HealthWindow)
@@ -630,11 +812,12 @@ func (s *Scheduler) weightedShuffle(keys []*data.UpstreamKey) {
 			score = 1
 		}
 		items[i] = scored{key: k, score: score}
-		totalWeight += score
 	}
 
 	// 加权随机排列（蓄水池采样变体）
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	// v0.13：改用 math/rand/v2 顶层 Float64（线程安全 ChaCha8 全局 RNG），
+	// 替换旧实现每请求 rand.NewSource(time.Now().UnixNano())——旧版同纳秒请求
+	// 会产生相同序列，且热路径每请求一次 alloc。
 	result := make([]*data.UpstreamKey, 0, len(keys))
 	remaining := make([]scored, len(items))
 	copy(remaining, items)
@@ -646,7 +829,7 @@ func (s *Scheduler) weightedShuffle(keys []*data.UpstreamKey) {
 			remWeight += item.score
 		}
 		// 随机选一个
-		pick := rng.Float64() * remWeight
+		pick := rand.Float64() * remWeight
 		accum := 0.0
 		chosenIdx := 0
 		for i, item := range remaining {
@@ -678,7 +861,9 @@ func (s *Scheduler) checkCircuitBreaker(ctx context.Context, key *data.UpstreamK
 			cooldown = 10 * time.Minute
 		}
 		coolUntil := time.Now().Add(cooldown).Unix()
-		_ = s.store.UpdateUpstreamKeyStatus(ctx, key.ID, "circuit_open", consec, coolUntil)
+		if err := s.store.UpdateUpstreamKeyStatus(ctx, key.ID, "circuit_open", consec, coolUntil); err != nil {
+			slog.Warn("熔断开启回写 upstream_keys 失败", "key_id", key.ID, "consec", consec, "err", err)
+		}
 	}
 }
 
@@ -689,7 +874,9 @@ func (s *Scheduler) markHealthy(ctx context.Context, key *data.UpstreamKey) {
 	// 半开试探成功 → 熔断闭合，转回 active
 	if key.Status == "half_open" {
 		key.Status = "active"
-		_ = s.store.UpdateUpstreamKeyStatus(ctx, key.ID, "active", 0, 0)
+		if err := s.store.UpdateUpstreamKeyStatus(ctx, key.ID, "active", 0, 0); err != nil {
+			slog.Warn("半开闭合回写 upstream_keys 失败", "key_id", key.ID, "err", err)
+		}
 	}
 }
 
@@ -738,13 +925,13 @@ func (s *Scheduler) recordResult(ctx context.Context, traceID, model string, key
 		s.emitWebhook(ctx, evType, traceID, model, upstreamMask, errMsg, httpStatus, 0)
 	}
 	s.store.RecordRequest(ctx, data.RequestLog{
-		TraceID:        traceID,
-		UpstreamKey:   upstreamMask,
-		Model:          model,
-		Status:         status,
-		HTTPStatus:     httpStatus,
-		ErrorMessage:  errMsg,
-		Concurrency:    concurrency,
+		TraceID:      traceID,
+		UpstreamKey:  upstreamMask,
+		Model:        model,
+		Status:       status,
+		HTTPStatus:   httpStatus,
+		ErrorMessage: errMsg,
+		Concurrency:  concurrency,
 	})
 }
 
@@ -768,9 +955,13 @@ func (s *Scheduler) feedbackModelCircuit(ctx context.Context, model string, succ
 	}
 	threshold, cooldown := s.circuitConfig()
 	if success {
-		_ = s.store.ResetModelCircuitConsecutive(ctx, model)
+		if err := s.store.ResetModelCircuitConsecutive(ctx, model); err != nil {
+			slog.Warn("模型熔断清零失败", "model", model, "err", err)
+		}
 	} else {
-		_ = s.store.RecordModelCircuitFailure(ctx, model, threshold, int64(cooldown.Seconds()))
+		if err := s.store.RecordModelCircuitFailure(ctx, model, threshold, int64(cooldown.Seconds())); err != nil {
+			slog.Warn("模型熔断失败累加失败", "model", model, "err", err)
+		}
 	}
 }
 
@@ -804,14 +995,16 @@ func (s *Scheduler) reportResults(ctx context.Context, traceID string, items []k
 	}
 	// echo 熔断器变更回写 upstream_keys（Rust 已持久化到 kernel.db，此处同步 Go 侧 SQLite）
 	for _, ch := range resp.KeyBreakerChanges {
-		_ = s.store.UpdateUpstreamKeyStatus(ctx, ch.KeyID, ch.Status, ch.ConsecutiveFail, ch.CoolingUntil)
+		if err := s.store.UpdateUpstreamKeyStatus(ctx, ch.KeyID, ch.Status, ch.ConsecutiveFail, ch.CoolingUntil); err != nil {
+			slog.Warn("/report echo 熔断器变更回写失败", "key_id", ch.KeyID, "status", ch.Status, "err", err)
+		}
 	}
 }
 
 // tokenUsage 从响应中提取 token 用量。
 type tokenUsage struct {
 	Prompt     int `json:"prompt_tokens"`
-	Completion  int `json:"completion_tokens"`
+	Completion int `json:"completion_tokens"`
 	Total      int `json:"total_tokens"`
 }
 
@@ -826,13 +1019,3 @@ func extractTokens(body []byte) tokenUsage {
 	}
 	return tokenUsage{}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// 确保 io 用于 SSE
-var _ = io.EOF

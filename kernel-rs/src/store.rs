@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS sub_decisions(
 );
 CREATE INDEX IF NOT EXISTS idx_sub_dec_trace ON sub_decisions(trace_id);
 CREATE INDEX IF NOT EXISTS idx_sub_dec_ts ON sub_decisions(ts);
+-- v0.14：策略引擎元数据（active_strategy id 等）
+CREATE TABLE IF NOT EXISTS meta(
+    k TEXT PRIMARY KEY,
+    v TEXT NOT NULL
+);
 ";
 
 /// 打开/创建库并建表。
@@ -106,6 +111,29 @@ pub fn append_sub_decision(
         "INSERT INTO sub_decisions(trace_id,ts,call,kind,key_id,model,before,after)
          VALUES(?,?,?,?,?,?,?,?)",
         params![trace_id, now, call, kind, key_id, model, before, after],
+    )?;
+    Ok(())
+}
+
+// ─── v0.14 策略元数据 ────────────────────────────────────────────────
+
+/// 读 meta 键值（如 active_strategy）。不存在返回 None。
+pub fn get_meta(conn: &Connection, key: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare("SELECT v FROM meta WHERE k=?")?;
+    let mut rows = stmt.query_map(params![key], |r| r.get::<_, String>(0))?;
+    if let Some(row) = rows.next() {
+        Ok(Some(row?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// 写 meta 键值（upsert）。
+pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO meta(k,v) VALUES(?,?)
+         ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+        params![key, value],
     )?;
     Ok(())
 }

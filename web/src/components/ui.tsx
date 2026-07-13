@@ -241,3 +241,156 @@ export function EmptyState({ icon, title, desc }: { icon?: React.ReactNode; titl
     </div>
   )
 }
+
+// v0.13：统一错误态（查询失败展示 + 重试）。与 EmptyState/Skeleton 配套，
+// 消除各页内联「载入失败」文案，保证 loading/empty/error 三态一致。
+export function ErrorState({
+  title,
+  desc,
+  onRetry,
+}: {
+  title: string
+  desc?: string
+  onRetry?: () => void
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-destructive/70">
+        <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+        <line x1="12" y1="9" x2="12" y2="13" />
+        <line x1="12" y1="17" x2="12.01" y2="17" />
+      </svg>
+      <p className="text-sm font-medium text-destructive">{title}</p>
+      {desc && <p className="max-w-md text-center text-xs">{desc}</p>}
+      {onRetry && (
+        <Button size="sm" variant="outline" onClick={onRetry}>
+          重试
+        </Button>
+      )}
+    </div>
+  )
+}
+
+// v0.13：泛型可排序数据表。统一各页内联 <table> 的分页/排序/空态/载入态，
+// 保证列宽对齐与可访问性（th scope、button 标题）。客户端排序，适合单节点中小数据量。
+export interface DataTableColumn<T> {
+  key: string
+  header: React.ReactNode
+  cell: (row: T) => React.ReactNode
+  className?: string
+  sortable?: boolean
+  sortValue?: (row: T) => string | number
+}
+
+export function DataTable<T>({
+  columns,
+  data,
+  rowKey,
+  loading,
+  empty,
+  error,
+  onRetry,
+  onRowClick,
+  className,
+}: {
+  columns: DataTableColumn<T>[]
+  data: T[]
+  rowKey: (row: T) => string | number
+  loading?: boolean
+  empty?: React.ReactNode
+  error?: React.ReactNode
+  onRetry?: () => void
+  onRowClick?: (row: T) => void
+  className?: string
+}) {
+  const [sortKey, setSortKey] = React.useState<string | null>(null)
+  const [sortDir, setSortDir] = React.useState<'asc' | 'desc'>('desc')
+
+  const toggleSort = (col: DataTableColumn<T>) => {
+    if (!col.sortable) return
+    if (sortKey === col.key) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(col.key)
+      setSortDir('desc')
+    }
+  }
+
+  let rows = data
+  if (sortKey) {
+    const col = columns.find((c) => c.key === sortKey)
+    if (col?.sortValue) {
+      const get = col.sortValue
+      rows = [...data].sort((a, b) => {
+        const va = get(a)
+        const vb = get(b)
+        if (va < vb) return sortDir === 'asc' ? -1 : 1
+        if (va > vb) return sortDir === 'asc' ? 1 : -1
+        return 0
+      })
+    }
+  }
+
+  const colSpan = columns.length
+  const body = loading ? (
+    <tr>
+      <td colSpan={colSpan} className="py-10">
+        <div className="flex justify-center"><Skeleton className="h-6 w-2/3" /></div>
+      </td>
+    </tr>
+  ) : error ? (
+    <tr>
+      <td colSpan={colSpan}>
+        {typeof error === 'string' ? (
+          <ErrorState title={error} onRetry={onRetry} />
+        ) : (
+          error
+        )}
+      </td>
+    </tr>
+  ) : rows.length === 0 ? (
+    <tr>
+      <td colSpan={colSpan}>{empty ?? <EmptyState title="暂无数据" />}</td>
+    </tr>
+  ) : (
+    rows.map((row) => (
+      <tr
+        key={rowKey(row)}
+        onClick={onRowClick ? () => onRowClick(row) : undefined}
+        className={cn('border-t', onRowClick && 'cursor-pointer hover:bg-muted/50')}
+      >
+        {columns.map((c) => (
+          <td key={c.key} className={cn('py-2', c.className)}>
+            {c.cell(row)}
+          </td>
+        ))}
+      </tr>
+    ))
+  )
+
+  return (
+    <div className={cn('overflow-x-auto', className)}>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-xs text-muted-foreground">
+            {columns.map((c) => (
+              <th
+                key={c.key}
+                scope="col"
+                className={cn('pb-2', c.sortable && 'cursor-pointer select-none', c.className)}
+                onClick={() => toggleSort(c)}
+                aria-sort={sortKey === c.key ? (sortDir === 'asc' ? 'ascending' : 'descending') : undefined}
+              >
+                <span className="inline-flex items-center gap-1">
+                  {c.header}
+                  {c.sortable && sortKey === c.key && <span aria-hidden>{sortDir === 'asc' ? '▲' : '▼'}</span>}
+                </span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>{body}</tbody>
+      </table>
+    </div>
+  )
+}

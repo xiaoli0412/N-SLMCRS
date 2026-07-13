@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"github.com/nslmcrs/gateway/internal/hooks"
 	"github.com/nslmcrs/gateway/internal/kernelctl"
 	"github.com/nslmcrs/gateway/internal/logging"
+	"github.com/nslmcrs/gateway/internal/metrics"
 	"github.com/nslmcrs/gateway/internal/modelhealth"
 	"github.com/nslmcrs/gateway/internal/modelmeta"
 	"github.com/nslmcrs/gateway/internal/ratelimit"
@@ -41,7 +43,7 @@ import (
 
 // version 通过 -ldflags "-X main.version=..." 注入（Dockerfile 默认注入 v0.12.0）；
 // go run 直跑时回退到此默认值，保持与前端 package.json 一致。
-var version = "v0.12.0"
+var version = "v0.14.0"
 
 func main() {
 	// -version：打印版本后退出（供 Docker healthcheck 与运维探活使用）
@@ -125,6 +127,11 @@ func main() {
 	if err := admin.LoadPersistedSchedulerOverrides(rootCtx, sched, store); err != nil {
 		logger.Warn(rootCtx, "server", "加载已持久化的调度覆盖失败: "+err.Error())
 	}
+	// 5c.1 v0.14：加载已持久化的活跃策略镜像到调度器（降级路径据此选算法）。
+	// 内核在线时内核为权威（自载 kernel meta），此处镜像仅降级用。
+	if err := admin.LoadPersistedStrategy(rootCtx, sched, store); err != nil {
+		logger.Warn(rootCtx, "server", "加载已持久化的策略镜像失败: "+err.Error())
+	}
 
 	// 6. 失效检测 + 模型同步
 	checker := modelmeta.NewStalenessChecker(store)
@@ -150,11 +157,50 @@ func main() {
 	// 6d. 数据库备份服务（v0.8）：VACUUM INTO 快照 + 定时轮转；未配置 interval 则仅手动触发
 	backupSvc := backup.New(store, cfg.Backup.Dir, cfg.Backup.Interval, cfg.Backup.Retention)
 
-	go apCtrl.Start(rootCtx)      // Auto-Pilot 2 分钟决策循环
-	go syncer.Start(rootCtx)      // 模型目录同步
-	go prober.Start(rootCtx)      // 模型探活
+	go apCtrl.Start(rootCtx)        // Auto-Pilot 2 分钟决策循环
+	go syncer.Start(rootCtx)        // 模型目录同步
+	go prober.Start(rootCtx)        // 模型探活
 	go healthSweeper.Start(rootCtx) // 模型级健康扫描与熔断
-	go backupSvc.Start(rootCtx)   // 数据库定时备份
+	go backupSvc.Start(rootCtx)     // 数据库定时备份
+
+	// v0.14：日志留存清理——每日裁剪 app_logs/audit_log 超过留存期的记录。
+	// LOG_RETENTION_DAYS 控制留存天数（默认 14），避免日志表无限增长。
+	go func() {
+		days := 14
+		if v := os.Getenv("LOG_RETENTION_DAYS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				days = n
+			}
+		}
+		prune := func() {
+			cutoff := time.Now().Unix() - int64(days*24*3600)
+			if n, err := store.PruneLogs(rootCtx, cutoff); err == nil && n > 0 {
+				logger.Info(rootCtx, "server", "裁剪 app_logs", "deleted", n, "retention_days", days)
+			}
+			if n, err := store.PruneAudit(rootCtx, cutoff); err == nil && n > 0 {
+				logger.Info(rootCtx, "server", "裁剪 audit_log", "deleted", n, "retention_days", days)
+			}
+		}
+		prune() // 启动即裁一次
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-rootCtx.Done():
+				return
+			case <-ticker.C:
+				prune()
+			}
+		}
+	}()
+
+	// v0.13：Prometheus 指标注册表 + 采集器，注入 scheduler 热路径。
+	metricsRegistry := metrics.NewRegistry()
+	metricsCollector := metrics.NewCollector(metricsRegistry, version)
+	sched.SetMetrics(metricsCollector)
+
+	// kernel 客户端（供 /readyz 探活；与注入 scheduler 的同一实例）
+	kernelClient := kernelctl.NewFromEnv()
 
 	// 7. 路由
 	if os.Getenv("GIN_MODE") == "" {
@@ -164,9 +210,33 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(requestLogger(logger))
 
-	// 健康检查
+	// 健康检查：进程存活（liveness）
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "n-slmcrs", "version": version})
+	})
+
+	// 就绪检查：DB 可达 + kernel 可达（fail-closed 模式下 kernel 挂即不可达）。
+	// 供 docker/k8s readinessProbe 与部署脚本探活使用。
+	r.GET("/readyz", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer cancel()
+		if err := store.DB().PingContext(ctx); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "reason": "db unreachable", "detail": err.Error()})
+			return
+		}
+		kernelOK := kernelClient.Health(ctx)
+		// fail-closed 且 kernel 挂 → 不可达（热路径会拒绝所有准入）
+		if kernelClient.FailClosed() && !kernelOK {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "reason": "kernel unreachable (fail-closed)"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ready", "kernel": kernelOK, "fail_closed": kernelClient.FailClosed()})
+	})
+
+	// Prometheus 指标暴露（免鉴权，标准 text/plain；由抓取端网络层控制访问）。
+	r.GET("/metrics", func(c *gin.Context) {
+		c.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		metricsRegistry.WriteMetrics(c.Writer)
 	})
 
 	// 转发 API（下游凭证鉴权）
@@ -182,6 +252,7 @@ func main() {
 	adminHandler.SetBackup(backupSvc)
 	adminHandler.SetHealthSweeper(healthSweeper)
 	adminHandler.SetWebhook(webhook) // v0.10：启用 /api/admin/hooks/* 渠道管理与 webhook 配置/测试
+	adminHandler.SetKernel(kernelClient) // v0.14：启用 /api/admin/strategy 策略引擎
 	adminHandler.RegisterRoutes(r)
 
 	// 前端静态资源 + SPA 兜底（最后注册）
@@ -190,10 +261,14 @@ func main() {
 	// 启动服务
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
-		Addr:         addr,
-		Handler:      r,
-		ReadTimeout:  300 * time.Second,
-		WriteTimeout: 300 * time.Second,
+		Addr:              addr,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second, // 慢速头部攻击（slowloris）防护
+		ReadTimeout:       300 * time.Second,
+		// WriteTimeout=0：流式 SSE 响应可能持续数分钟，固定 300s 截止会切断长生成。
+		// 改为不设全局写截止，靠每请求 context.WithTimeout（scheduler.RequestTimeout）
+		// 与上游断流兜底；非流式请求体读仍受 ReadTimeout 约束。
+		WriteTimeout: 0,
 	}
 
 	go func() {
